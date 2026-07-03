@@ -1,0 +1,1 @@
+CreateObject("Wscript.Shell").Run "D:\Proyectos\Daemon_Sheets\venv\Scripts\pythonw.exe C:\Proyectos\Daemon_Sheets\daemon.py", 0, True
