@@ -6,6 +6,7 @@ import time
 import hashlib
 import sys
 import warnings
+import sync_metas
 
 warnings.filterwarnings("ignore")
 
@@ -85,7 +86,7 @@ TransaccionesHoy AS (
 SELECT 
     CAST(GETDATE() AS DATE) AS Fecha,
     CONVERT(VARCHAR(6), GETDATE(), 112) AS Periodo,
-    ISNULL(MAX(M.NombreAgencia), 'TOTAL GENERAL') AS NombreAgencia,
+    CASE WHEN GROUPING(M.IdSAgencia) = 1 THEN 'TOTAL GENERAL' ELSE MAX(M.NombreAgencia) END AS NombreAgencia,
     ISNULL(COUNT(T.PAGARE), 0) AS ColocacionNumReal,
     ISNULL(SUM(T.MONTO_PRESTAMO), 0) AS ColocacionMontoReal
 FROM AgenciasMaestro M
@@ -103,8 +104,8 @@ def get_data_hash(df):
     return hashlib.md5(df.to_csv(index=False).encode()).hexdigest()
 
 
-def push_to_google_sheets(df):
-    """Sincroniza los datos con Google e incluye la fecha de última actualización."""
+def push_to_google_sheets(df, df_anterior):
+    """Sincroniza los datos con Google, incluye la marca de tiempo y calcula deltas."""
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
         client = gspread.authorize(creds)
@@ -113,20 +114,46 @@ def push_to_google_sheets(df):
         # 1. Limpiamos toda la hoja
         sheet.clear()
 
-        # 2. Escribimos la tabla de datos a partir de la celda A1
+        # 2. Escribimos la tabla principal
         datos = [df.columns.values.tolist()] + df.values.tolist()
         sheet.update(values=datos, range_name="A1")
 
-        # 3. Capturamos la hora y fecha actual del sistema
+        # 3. Escribimos la marca de tiempo a la derecha (G1 y H1)
         hora_actual = time.strftime("%d/%m/%Y %H:%M:%S")
-
-        # 4. Escribimos la marca de tiempo a la derecha (Celdas G1 y H1)
-        # (Si tu tabla es más ancha, puedes cambiar 'G1:H1' por 'J1:K1', etc.)
         marca_tiempo = [["Última actualización:", hora_actual]]
         sheet.update(values=marca_tiempo, range_name="G1:H1")
 
+        # 4. Cálculo y escritura de variaciones en G2:H...
+        deltas = []
+        for i in range(len(df)):
+            if df_anterior is not None:
+                # Comparamos matemáticamente la fila actual con la anterior
+                diff_num = (
+                    df.iloc[i]["ColocacionNumReal"]
+                    - df_anterior.iloc[i]["ColocacionNumReal"]
+                )
+                diff_monto = (
+                    df.iloc[i]["ColocacionMontoReal"]
+                    - df_anterior.iloc[i]["ColocacionMontoReal"]
+                )
+            else:
+                diff_num = 0
+                diff_monto = 0
+
+            # Formateamos con el "+ " si hay crecimiento, o lo dejamos vacío
+            str_num = f"+ {int(diff_num)}" if diff_num > 0 else ""
+            str_monto = (
+                f"+ {diff_monto:.2f}".replace(".", ",") if diff_monto > 0 else ""
+            )
+
+            deltas.append([str_num, str_monto])
+
+        # Insertamos el bloque de deltas debajo de la marca de tiempo
+        rango_deltas = f"G2:H{len(df) + 1}"
+        sheet.update(values=deltas, range_name=rango_deltas)
+
         print(
-            f"[{time.strftime('%H:%M:%S')}] ✅ GSheets sincronizado con marca de tiempo."
+            f"[{time.strftime('%H:%M:%S')}] ✅ GSheets sincronizado con deltas en columnas G y H."
         )
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] ❌ Error en API Google: {e}")
@@ -138,18 +165,35 @@ def push_to_google_sheets(df):
 def run_daemon():
     print(f"Iniciando Daemon de sincronización para '{SPREADSHEET_NAME}'...")
     ultimo_hash = None
+    df_anterior = None  # NUEVO: Memoria del estado previo
 
     while True:
         try:
-            # 1. Extracción rápida
+            # 1. Extracción rápida (tu código actual)
             conn = pyodbc.connect(DB_CONFIG)
             df_actual = pd.read_sql(QUERY, conn)
             conn.close()
 
             df_actual.fillna(0, inplace=True)
-            df_actual = df_actual.astype(str)
 
-            # 2. Análisis de varianza
+            # (Tu código actual donde fuerzas int y float)
+            if "ColocacionNumReal" in df_actual.columns:
+                df_actual["ColocacionNumReal"] = pd.to_numeric(
+                    df_actual["ColocacionNumReal"]
+                ).astype(int)
+            if "ColocacionMontoReal" in df_actual.columns:
+                df_actual["ColocacionMontoReal"] = pd.to_numeric(
+                    df_actual["ColocacionMontoReal"]
+                ).astype(float)
+
+            if "Fecha" in df_actual.columns:
+                df_actual["Fecha"] = df_actual["Fecha"].astype(str)
+            if "Periodo" in df_actual.columns:
+                df_actual["Periodo"] = df_actual["Periodo"].astype(str)
+            if "NombreAgencia" in df_actual.columns:
+                df_actual["NombreAgencia"] = df_actual["NombreAgencia"].astype(str)
+
+            # 2. Análisis de varianza (tu código actual)
             hash_actual = get_data_hash(df_actual)
 
             # 3. Disparador Push
@@ -157,16 +201,23 @@ def run_daemon():
                 print(
                     f"[{time.strftime('%H:%M:%S')}] ⚡ Nuevo crédito/cambio detectado en TRANSACMIF."
                 )
-                push_to_google_sheets(df_actual)
+
+                # NUEVO: Pasamos df_anterior a la función
+                push_to_google_sheets(df_actual, df_anterior)
+
+                # NUEVO: Guardamos el dataframe actual como "anterior" para la próxima vuelta
+                df_anterior = df_actual.copy()
                 ultimo_hash = hash_actual
 
         except pyodbc.Error as db_err:
             print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error de DB: {db_err}")
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error general: {e}")
-
-        # Espera de 30 segundos para no saturar el servidor SQL
-        time.sleep(1200)
+        # 4. Tarea extra: Sincronización de Metas
+        try:
+            sync_metas.run_sync_metas(DB_CONFIG)
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Tarea Metas: {e}")
 
 
 if __name__ == "__main__":
