@@ -1,3 +1,4 @@
+import os
 import pyodbc
 import pandas as pd
 import gspread
@@ -6,9 +7,13 @@ import time
 import hashlib
 import sys
 import warnings
+from dotenv import load_dotenv
 import sync_metas
 
 warnings.filterwarnings("ignore")
+
+# Cargar variables de entorno desde el archivo .env
+load_dotenv()
 
 # ==========================================
 # CONFIGURACIÓN
@@ -19,26 +24,30 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive",
 ]
 CREDS_FILE = "credenciales.json"
-SPREADSHEET_NAME = (
-    "Reporte_Productividad_En_Vivo"  # Reemplaza con el nombre exacto de tu archivo
-)
-SHEET_TAB_NAME = "Hoja 1"  # Reemplaza con el nombre exacto de la pestaña
+SPREADSHEET_NAME = "Reporte_Productividad_En_Vivo"
+SHEET_TAB_NAME = "Hoja 1"
 
-# 2. Base de Datos (Asegura apuntar al servidor DESKTOP-K6HIFFS)
+# 2. Base de Datos (Credenciales seguras desde .env)
 DB_CONFIG = (
-    r"DRIVER={ODBC Driver 17 for SQL Server};"
-    r"SERVER=192.168.10.150;"  # La IP de tu servidor Core
-    r"DATABASE=TRANSACMIF;"  # Tu base de datos Upstream
-    r"UID=UsuarioDTI;"  # Tu usuario definido en el .env
-    r"PWD=DTI.12345;"  # Tu contraseña
+    f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+    f"SERVER={os.getenv('DB_TRANSACMIF_SERVER')};"
+    f"DATABASE={os.getenv('DB_TRANSACMIF_NAME')};"
+    f"UID={os.getenv('DB_TRANSACMIF_USER')};"
+    f"PWD={os.getenv('DB_TRANSACMIF_PASS')};"
+)
+
+DB_CONFIG_DWH = (
+    f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+    f"SERVER={os.getenv('DB_DWH_SERVER')};"
+    f"DATABASE={os.getenv('DB_DWH_NAME')};"
+    f"Trusted_Connection=yes;"
 )
 
 # ==========================================
-# CONSULTA SQL (Tu lógica de negocio pura)
+# CONSULTA SQL
 # ==========================================
 QUERY = """
 WITH AgenciasMaestro AS (
-    -- 1. Creamos un esqueleto rígido con las 13 agencias
     SELECT * FROM (VALUES 
         ('01', 'Wanchaq'), ('02', 'San Jerónimo'), ('03', 'Quillabamba'),
         ('04', 'Sicuani'), ('05', 'Molino'), ('06', 'Juliaca'),
@@ -48,7 +57,6 @@ WITH AgenciasMaestro AS (
     ) AS t(IdSAgencia, NombreAgencia)
 ),
 TransaccionesHoy AS (
-    -- 2. Filtramos la data operativa real del día
     SELECT 
         CASE
             WHEN T_ANA.ID_AGE = '98' THEN
@@ -82,7 +90,6 @@ TransaccionesHoy AS (
           'LHR5', 'HTEJ5', 'TKPN5', 'GHVJ5', 'OTA5', 'SDHF5', 'CMN5', 'HQND5'
       )
 )
--- 3. Unimos el esqueleto con la data para forzar las 13 filas + el Total
 SELECT 
     CAST(GETDATE() AS DATE) AS Fecha,
     CONVERT(VARCHAR(6), GETDATE(), 112) AS Periodo,
@@ -95,39 +102,84 @@ GROUP BY ROLLUP(M.IdSAgencia)
 ORDER BY CASE WHEN M.IdSAgencia IS NULL THEN 1 ELSE 0 END, M.IdSAgencia;
 """
 
+QUERY_INCLUSIVOS = """
+WITH AgenciasMaestro AS (
+    SELECT * FROM (VALUES 
+        ('01', 'Wanchaq', 1), ('02', 'San Jerónimo', 2), ('03', 'Quillabamba', 3),
+        ('04', 'Sicuani', 4), ('05', 'Molino', 5), ('06', 'Juliaca', 6),
+        ('07', 'Lima Los Olivos', 7), ('08', 'Tica Tica', 8), ('09', 'Magisterio', 9)
+        /*Aquí es donde de borrar los comentarios Luis*/
+        /*,
+        ('10', 'Lima SJL', 10), ('11', 'Chiclayo', 11), ('12', 'Arequipa', 12),
+        ('13', 'Pucallpa', 13)*/
+    ) AS t(IdSAgencia, NombreAgencia, Orden)
+),
+CreditosInclusivosMes AS (
+    SELECT 
+        CASE
+            WHEN T_ANA.ID_AGE = '98' THEN
+                CASE
+                    WHEN RTRIM(T_ANA.ID_USER) LIKE '%10' THEN '10'
+                    WHEN RTRIM(T_ANA.ID_USER) LIKE '%11' THEN '11'
+                    WHEN RTRIM(T_ANA.ID_USER) LIKE '%12' THEN '12'
+                    WHEN RTRIM(T_ANA.ID_USER) LIKE '%13' THEN '13'
+                    WHEN RTRIM(T_ANA.ID_USER) LIKE '%6'  THEN '06'
+                    WHEN RTRIM(T_ANA.ID_USER) LIKE '%7'  THEN '07'
+                    ELSE '98'
+                END
+            WHEN T_ANA.ID_AGE = '01' THEN
+                CASE
+                    WHEN RTRIM(T_ANA.ID_USER) LIKE '%9' THEN '09'
+                    ELSE '01'
+                END
+            ELSE T_ANA.ID_AGE
+        END AS IdSAgencia,
+        COUNT(T_PTM.PAGARE) AS CreditosInclusivos
+    FROM dbo.PRESTAMO T_PTM
+    INNER JOIN dbo.PREEC T_PRE ON T_PRE.CUENTA = T_PTM.CUENTA AND T_PRE.OTORGA = T_PTM.OTORGA AND T_PRE.PAGARE = T_PTM.PAGARE 
+        AND T_PRE.PERIODO = CONVERT(VARCHAR(6), GETDATE(), 112)
+    INNER JOIN SEGURIDAD.DBO.ANAREC T_ANA ON T_ANA.ID_ANAREC = T_PRE.ID_ANA AND T_ANA.FLAG_ANAREC = 'A'
+    WHERE CAST(T_PTM.OTORGA AS DATE) >= DATEADD(month, DATEDIFF(month, 0, GETDATE()), 0)
+      AND CAST(T_PTM.OTORGA AS DATE) <= CAST(GETDATE() AS DATE)
+      AND T_PTM.TIPO_PROD IN ('42', '44') 
+    GROUP BY T_ANA.ID_AGE, T_ANA.ID_USER
+)
+SELECT 
+    AM.NombreAgencia AS AGENCIA,
+    ISNULL(SUM(CI.CreditosInclusivos), 0) AS [CRÉDITOS PRODUCTO INCLUSIVOS]
+FROM AgenciasMaestro AM
+LEFT JOIN CreditosInclusivosMes CI ON AM.IdSAgencia = CI.IdSAgencia
+GROUP BY AM.NombreAgencia, AM.Orden
+ORDER BY AM.Orden;
+"""
+
 
 # ==========================================
 # FUNCIONES NÚCLEO
 # ==========================================
 def get_data_hash(df):
-    """Genera una huella digital (hash) rápida de los datos."""
     return hashlib.md5(df.to_csv(index=False).encode()).hexdigest()
 
 
-def push_to_google_sheets(df, df_anterior):
-    """Sincroniza los datos con Google, incluye la marca de tiempo y calcula deltas."""
+def push_to_google_sheets(df, df_anterior, df_inclusivos):
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
         client = gspread.authorize(creds)
         sheet = client.open(SPREADSHEET_NAME).worksheet(SHEET_TAB_NAME)
 
-        # 1. Limpiamos toda la hoja
-        sheet.clear()
-
-        # 2. Escribimos la tabla principal
+        # 1. Escribimos la tabla principal
         datos = [df.columns.values.tolist()] + df.values.tolist()
         sheet.update(values=datos, range_name="A1")
 
-        # 3. Escribimos la marca de tiempo a la derecha (G1 y H1)
+        # 2. Marca de tiempo
         hora_actual = time.strftime("%d/%m/%Y %H:%M:%S")
         marca_tiempo = [["Última actualización:", hora_actual]]
         sheet.update(values=marca_tiempo, range_name="G1:H1")
 
-        # 4. Cálculo y escritura de variaciones en G2:H...
+        # 3. Deltas
         deltas = []
         for i in range(len(df)):
             if df_anterior is not None:
-                # Comparamos matemáticamente la fila actual con la anterior
                 diff_num = (
                     df.iloc[i]["ColocacionNumReal"]
                     - df_anterior.iloc[i]["ColocacionNumReal"]
@@ -140,20 +192,23 @@ def push_to_google_sheets(df, df_anterior):
                 diff_num = 0
                 diff_monto = 0
 
-            # Formateamos con el "+ " si hay crecimiento, o lo dejamos vacío
             str_num = f"+ {int(diff_num)}" if diff_num > 0 else ""
             str_monto = (
                 f"+ {diff_monto:.2f}".replace(".", ",") if diff_monto > 0 else ""
             )
-
             deltas.append([str_num, str_monto])
 
-        # Insertamos el bloque de deltas debajo de la marca de tiempo
         rango_deltas = f"G2:H{len(df) + 1}"
         sheet.update(values=deltas, range_name=rango_deltas)
 
+        # 4. Tabla Inclusivos (En fila 20)
+        datos_inc = [
+            df_inclusivos.columns.values.tolist()
+        ] + df_inclusivos.values.tolist()
+        sheet.update(values=datos_inc, range_name="A20")
+
         print(
-            f"[{time.strftime('%H:%M:%S')}] ✅ GSheets sincronizado con deltas en columnas G y H."
+            f"[{time.strftime('%H:%M:%S')}] ✅ GSheets sincronizado (Principal A1 e Inclusivos A20)."
         )
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] ❌ Error en API Google: {e}")
@@ -165,18 +220,22 @@ def push_to_google_sheets(df, df_anterior):
 def run_daemon():
     print(f"Iniciando Daemon de sincronización para '{SPREADSHEET_NAME}'...")
     ultimo_hash = None
-    df_anterior = None  # NUEVO: Memoria del estado previo
+    df_anterior = None
 
     while True:
         try:
-            # 1. Extracción rápida (tu código actual)
+            # 1. Extracción de datos
             conn = pyodbc.connect(DB_CONFIG)
             df_actual = pd.read_sql(QUERY, conn)
+
+            # Extraemos los datos inclusivos en la misma conexión
+            df_inclusivos = pd.read_sql(QUERY_INCLUSIVOS, conn)
+            df_inclusivos.fillna(0, inplace=True)
+
             conn.close()
 
             df_actual.fillna(0, inplace=True)
 
-            # (Tu código actual donde fuerzas int y float)
             if "ColocacionNumReal" in df_actual.columns:
                 df_actual["ColocacionNumReal"] = pd.to_numeric(
                     df_actual["ColocacionNumReal"]
@@ -185,7 +244,6 @@ def run_daemon():
                 df_actual["ColocacionMontoReal"] = pd.to_numeric(
                     df_actual["ColocacionMontoReal"]
                 ).astype(float)
-
             if "Fecha" in df_actual.columns:
                 df_actual["Fecha"] = df_actual["Fecha"].astype(str)
             if "Periodo" in df_actual.columns:
@@ -193,7 +251,7 @@ def run_daemon():
             if "NombreAgencia" in df_actual.columns:
                 df_actual["NombreAgencia"] = df_actual["NombreAgencia"].astype(str)
 
-            # 2. Análisis de varianza (tu código actual)
+            # 2. Análisis de varianza
             hash_actual = get_data_hash(df_actual)
 
             # 3. Disparador Push
@@ -202,22 +260,23 @@ def run_daemon():
                     f"[{time.strftime('%H:%M:%S')}] ⚡ Nuevo crédito/cambio detectado en TRANSACMIF."
                 )
 
-                # NUEVO: Pasamos df_anterior a la función
-                push_to_google_sheets(df_actual, df_anterior)
+                # Enviamos ambos DataFrames
+                push_to_google_sheets(df_actual, df_anterior, df_inclusivos)
 
-                # NUEVO: Guardamos el dataframe actual como "anterior" para la próxima vuelta
                 df_anterior = df_actual.copy()
                 ultimo_hash = hash_actual
 
-        except pyodbc.Error as db_err:
-            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error de DB: {db_err}")
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error general: {e}")
+
         # 4. Tarea extra: Sincronización de Metas
         try:
-            sync_metas.run_sync_metas(DB_CONFIG)
+            sync_metas.run_sync_metas(DB_CONFIG_DWH)
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Tarea Metas: {e}")
+
+        # Este sleep ahora está protegido y fuera de los bloques try/except
+        time.sleep(120)
 
 
 if __name__ == "__main__":

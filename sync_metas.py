@@ -53,6 +53,7 @@ def run_sync_metas(db_config):
 
     # 5. Insertar en SQL Server
     try:
+        # AQUÍ USAMOS EL PARÁMETRO db_config (que viene del daemon)
         conn = pyodbc.connect(db_config)
         cursor = conn.cursor()
 
@@ -69,7 +70,6 @@ def run_sync_metas(db_config):
         """
 
         for row in data:
-            # row: [Fecha, IdSAgencia, NumMeta, NumProy, MontoMeta, MontoProy]
             cursor.execute(insert_sql, row)
 
         conn.commit()
