@@ -107,11 +107,9 @@ WITH AgenciasMaestro AS (
     SELECT * FROM (VALUES 
         ('01', 'Wanchaq', 1), ('02', 'San Jerónimo', 2), ('03', 'Quillabamba', 3),
         ('04', 'Sicuani', 4), ('05', 'Molino', 5), ('06', 'Juliaca', 6),
-        ('07', 'Lima Los Olivos', 7), ('08', 'Tica Tica', 8), ('09', 'Magisterio', 9)
-        /*Aquí es donde de borrar los comentarios Luis*/
-        /*,
+        ('07', 'Lima Los Olivos', 7), ('08', 'Tica Tica', 8), ('09', 'Magisterio', 9),
         ('10', 'Lima SJL', 10), ('11', 'Chiclayo', 11), ('12', 'Arequipa', 12),
-        ('13', 'Pucallpa', 13)*/
+        ('13', 'Pucallpa', 13)
     ) AS t(IdSAgencia, NombreAgencia, Orden)
 ),
 CreditosInclusivosMes AS (
@@ -167,16 +165,57 @@ def push_to_google_sheets(df, df_anterior, df_inclusivos):
         client = gspread.authorize(creds)
         sheet = client.open(SPREADSHEET_NAME).worksheet(SHEET_TAB_NAME)
 
-        # 1. Escribimos la tabla principal
-        datos = [df.columns.values.tolist()] + df.values.tolist()
-        sheet.update(values=datos, range_name="A1")
+        # ========================================================
+        # 1. MAPEO DE COLUMNAS (TOTALMENTE CONFIGURABLE)
+        # ========================================================
+        # Define exactamente a qué letra de columna va cada dato
+        # Si no mapeas una columna (ej. D o F), el script la ignorará,
+        # permitiendo que tus fórmulas de Excel vivan ahí intactas.
+        MAPEO_PRINCIPAL = {
+            "Fecha": "A",
+            "Periodo": "B",
+            "NombreAgencia": "C",
+            "ColocacionNumReal": "E",  # Apunta a E
+            "ColocacionMontoReal": "G",  # Apunta a G
+        }
 
-        # 2. Marca de tiempo
+        # Rangos fijos para otros elementos
+        RANGO_MARCA_TIEMPO = "H1:I1"
+        COLUMNAS_DELTAS = "H:I"  # Apunta a H e I (desde la fila 2 hacia abajo)
+        RANGO_INCLUSIVOS = "A20"
+
+        # Lista para agrupar todas las peticiones (batch_update es mucho más rápido)
+        actualizaciones = []
+
+        # --------------------------------------------------------
+        # Empaquetar columnas de la tabla principal
+        # --------------------------------------------------------
+        filas_totales = len(df) + 1  # +1 para incluir el encabezado
+
+        for col_df, letra_sheet in MAPEO_PRINCIPAL.items():
+            if col_df in df.columns:
+                # Construye la estructura vertical: [[Encabezado], [Valor1], [Valor2], ...]
+                valores_columna = [[col_df]] + df[[col_df]].values.tolist()
+                rango_destino = f"{letra_sheet}1:{letra_sheet}{filas_totales}"
+
+                actualizaciones.append(
+                    {"range": rango_destino, "values": valores_columna}
+                )
+
+        # --------------------------------------------------------
+        # Empaquetar Marca de Tiempo
+        # --------------------------------------------------------
         hora_actual = time.strftime("%d/%m/%Y %H:%M:%S")
-        marca_tiempo = [["Última actualización:", hora_actual]]
-        sheet.update(values=marca_tiempo, range_name="G1:H1")
+        actualizaciones.append(
+            {
+                "range": RANGO_MARCA_TIEMPO,
+                "values": [["Última actualización:", hora_actual]],
+            }
+        )
 
-        # 3. Deltas
+        # --------------------------------------------------------
+        # Empaquetar Deltas (Últimas actualizaciones)
+        # --------------------------------------------------------
         deltas = []
         for i in range(len(df)):
             if df_anterior is not None:
@@ -198,18 +237,30 @@ def push_to_google_sheets(df, df_anterior, df_inclusivos):
             )
             deltas.append([str_num, str_monto])
 
-        rango_deltas = f"G2:H{len(df) + 1}"
-        sheet.update(values=deltas, range_name=rango_deltas)
+        letra_inicio_delta, letra_fin_delta = COLUMNAS_DELTAS.split(":")
+        rango_deltas_dinamico = (
+            f"{letra_inicio_delta}2:{letra_fin_delta}{filas_totales}"
+        )
 
-        # 4. Tabla Inclusivos (En fila 20)
+        actualizaciones.append({"range": rango_deltas_dinamico, "values": deltas})
+
+        # --------------------------------------------------------
+        # Empaquetar Tabla Inclusivos
+        # --------------------------------------------------------
         datos_inc = [
             df_inclusivos.columns.values.tolist()
         ] + df_inclusivos.values.tolist()
-        sheet.update(values=datos_inc, range_name="A20")
+        actualizaciones.append({"range": RANGO_INCLUSIVOS, "values": datos_inc})
+
+        # ========================================================
+        # 2. EJECUTAR ACTUALIZACIÓN MASIVA EN SHEETS
+        # ========================================================
+        sheet.batch_update(actualizaciones)
 
         print(
-            f"[{time.strftime('%H:%M:%S')}] ✅ GSheets sincronizado (Principal A1 e Inclusivos A20)."
+            f"[{time.strftime('%H:%M:%S')}] ✅ GSheets sincronizado (Mapeo avanzado por columnas)."
         )
+
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] ❌ Error en API Google: {e}")
 
