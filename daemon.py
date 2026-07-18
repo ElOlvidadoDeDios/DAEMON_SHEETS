@@ -8,17 +8,17 @@ import hashlib
 import sys
 import warnings
 from dotenv import load_dotenv
-import sync_metas
+
+# Módulos de sincronización externa
+import sync_metas_diario
+import sync_metas_mensual
 
 warnings.filterwarnings("ignore")
-
-# Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
 # ==========================================
 # CONFIGURACIÓN
 # ==========================================
-# 1. Google Sheets
 SCOPE = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive",
@@ -27,7 +27,6 @@ CREDS_FILE = "credenciales.json"
 SPREADSHEET_NAME = "Reporte_Productividad_En_Vivo"
 SHEET_TAB_NAME = "Hoja 1"
 
-# 2. Base de Datos (Credenciales seguras desde .env)
 DB_CONFIG = (
     f"DRIVER={{ODBC Driver 17 for SQL Server}};"
     f"SERVER={os.getenv('DB_TRANSACMIF_SERVER')};"
@@ -44,7 +43,7 @@ DB_CONFIG_DWH = (
 )
 
 # ==========================================
-# CONSULTA SQL
+# CONSULTAS SQL (Intactas)
 # ==========================================
 QUERY = """
 WITH AgenciasMaestro AS (
@@ -165,102 +164,41 @@ def push_to_google_sheets(df, df_anterior, df_inclusivos):
         client = gspread.authorize(creds)
         sheet = client.open(SPREADSHEET_NAME).worksheet(SHEET_TAB_NAME)
 
-        # ========================================================
-        # 1. MAPEO DE COLUMNAS (TOTALMENTE CONFIGURABLE)
-        # ========================================================
-        # Define exactamente a qué letra de columna va cada dato
-        # Si no mapeas una columna (ej. D o F), el script la ignorará,
-        # permitiendo que tus fórmulas de Excel vivan ahí intactas.
-        MAPEO_PRINCIPAL = {
-            "Fecha": "A",
-            "Periodo": "B",
-            "NombreAgencia": "C",
-            "ColocacionNumReal": "E",  # Apunta a E
-            "ColocacionMontoReal": "G",  # Apunta a G
-        }
-
-        # Rangos fijos para otros elementos
-        RANGO_MARCA_TIEMPO = "H1:I1"
-        COLUMNAS_DELTAS = "H:I"  # Apunta a H e I (desde la fila 2 hacia abajo)
-        RANGO_INCLUSIVOS = "A20"
-
-        # Lista para agrupar todas las peticiones (batch_update es mucho más rápido)
         actualizaciones = []
+        filas_df = len(df)
 
-        # --------------------------------------------------------
-        # Empaquetar columnas de la tabla principal
-        # --------------------------------------------------------
-        filas_totales = len(df) + 1  # +1 para incluir el encabezado
+        # 1. Columnas A, B, C (Fechas, Periodo, Agencia)
+        datos_abc = df[["Fecha", "Periodo", "NombreAgencia"]].values.tolist()
+        actualizaciones.append({"range": f"A2:C{filas_df + 1}", "values": datos_abc})
 
-        for col_df, letra_sheet in MAPEO_PRINCIPAL.items():
-            if col_df in df.columns:
-                # Construye la estructura vertical: [[Encabezado], [Valor1], [Valor2], ...]
-                valores_columna = [[col_df]] + df[[col_df]].values.tolist()
-                rango_destino = f"{letra_sheet}1:{letra_sheet}{filas_totales}"
+        # 2. Columna E (ColocacionNumReal) - Saltando la D
+        datos_e = [[val] for val in df["ColocacionNumReal"].tolist()]
+        actualizaciones.append({"range": f"E2:E{filas_df + 1}", "values": datos_e})
 
-                actualizaciones.append(
-                    {"range": rango_destino, "values": valores_columna}
-                )
+        # 3. Columna G (ColocacionMontoReal) - Saltando la F
+        datos_g = [[val] for val in df["ColocacionMontoReal"].tolist()]
+        actualizaciones.append({"range": f"G2:G{filas_df + 1}", "values": datos_g})
 
-        # --------------------------------------------------------
-        # Empaquetar Marca de Tiempo
-        # --------------------------------------------------------
-        hora_actual = time.strftime("%d/%m/%Y %H:%M:%S")
+        # 4. Columna H (Última actualización)
+        hora_actual = time.strftime("%d/%m/%Y\n%H:%M:%S")
         actualizaciones.append(
-            {
-                "range": RANGO_MARCA_TIEMPO,
-                "values": [["Última actualización:", hora_actual]],
-            }
+            {"range": "H1", "values": [[f"Última act:\n{hora_actual}"]]}
         )
 
-        # --------------------------------------------------------
-        # Empaquetar Deltas (Últimas actualizaciones)
-        # --------------------------------------------------------
-        deltas = []
-        for i in range(len(df)):
-            if df_anterior is not None:
-                diff_num = (
-                    df.iloc[i]["ColocacionNumReal"]
-                    - df_anterior.iloc[i]["ColocacionNumReal"]
-                )
-                diff_monto = (
-                    df.iloc[i]["ColocacionMontoReal"]
-                    - df_anterior.iloc[i]["ColocacionMontoReal"]
-                )
-            else:
-                diff_num = 0
-                diff_monto = 0
-
-            str_num = f"+ {int(diff_num)}" if diff_num > 0 else ""
-            str_monto = (
-                f"+ {diff_monto:.2f}".replace(".", ",") if diff_monto > 0 else ""
-            )
-            deltas.append([str_num, str_monto])
-
-        letra_inicio_delta, letra_fin_delta = COLUMNAS_DELTAS.split(":")
-        rango_deltas_dinamico = (
-            f"{letra_inicio_delta}2:{letra_fin_delta}{filas_totales}"
-        )
-
-        actualizaciones.append({"range": rango_deltas_dinamico, "values": deltas})
-
-        # --------------------------------------------------------
-        # Empaquetar Tabla Inclusivos
-        # --------------------------------------------------------
+        # 5. Inclusivos en A20
         datos_inc = [
             df_inclusivos.columns.values.tolist()
         ] + df_inclusivos.values.tolist()
-        actualizaciones.append({"range": RANGO_INCLUSIVOS, "values": datos_inc})
+        actualizaciones.append(
+            {"range": f"A20:B{19+len(datos_inc)}", "values": datos_inc}
+        )
 
-        # ========================================================
-        # 2. EJECUTAR ACTUALIZACIÓN MASIVA EN SHEETS
-        # ========================================================
+        # Disparamos todas las celdas en un solo envío
         sheet.batch_update(actualizaciones)
 
         print(
-            f"[{time.strftime('%H:%M:%S')}] ✅ GSheets sincronizado (Mapeo avanzado por columnas)."
+            f"[{time.strftime('%H:%M:%S')}] ✅ GSheets sincronizado (E=NumReal, G=MontoReal, H=Hora)."
         )
-
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] ❌ Error en API Google: {e}")
 
@@ -275,17 +213,13 @@ def run_daemon():
 
     while True:
         try:
-            # 1. Extracción de datos
             conn = pyodbc.connect(DB_CONFIG)
             df_actual = pd.read_sql(QUERY, conn)
-
-            # Extraemos los datos inclusivos en la misma conexión
             df_inclusivos = pd.read_sql(QUERY_INCLUSIVOS, conn)
-            df_inclusivos.fillna(0, inplace=True)
-
             conn.close()
 
             df_actual.fillna(0, inplace=True)
+            df_inclusivos.fillna(0, inplace=True)
 
             if "ColocacionNumReal" in df_actual.columns:
                 df_actual["ColocacionNumReal"] = pd.to_numeric(
@@ -302,31 +236,33 @@ def run_daemon():
             if "NombreAgencia" in df_actual.columns:
                 df_actual["NombreAgencia"] = df_actual["NombreAgencia"].astype(str)
 
-            # 2. Análisis de varianza
             hash_actual = get_data_hash(df_actual)
 
-            # 3. Disparador Push
             if hash_actual != ultimo_hash:
                 print(
                     f"[{time.strftime('%H:%M:%S')}] ⚡ Nuevo crédito/cambio detectado en TRANSACMIF."
                 )
-
-                # Enviamos ambos DataFrames
                 push_to_google_sheets(df_actual, df_anterior, df_inclusivos)
-
                 df_anterior = df_actual.copy()
                 ultimo_hash = hash_actual
 
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error general: {e}")
 
-        # 4. Tarea extra: Sincronización de Metas
+        # Metas Diarias
         try:
-            sync_metas.run_sync_metas(DB_CONFIG_DWH)
+            sync_metas_diario.run_sync_metas(DB_CONFIG_DWH)
         except Exception as e:
-            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Tarea Metas: {e}")
+            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Tarea Metas Diarias: {e}")
 
-        # Este sleep ahora está protegido y fuera de los bloques try/except
+        # Metas Mensuales
+        try:
+            sync_metas_mensual.run_sync_metas_mensual(DB_CONFIG_DWH)
+        except Exception as e:
+            print(
+                f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Tarea Metas Mensuales: {e}"
+            )
+
         time.sleep(120)
 
 
