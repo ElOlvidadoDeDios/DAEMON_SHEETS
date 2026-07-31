@@ -5,6 +5,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
 import hashlib
+import json
 
 SCOPE = [
     "https://spreadsheets.google.com/feeds",
@@ -13,12 +14,50 @@ SCOPE = [
 CREDS_FILE = "credenciales.json"
 SPREADSHEET_NAME = "Reporte_Productividad_En_Vivo"
 SHEET_TAB_NAME = "Hoja 1"
+LOG_FILE = "sync_metas_log.txt"
 
-ULTIMO_HASH_METAS = None
 
+def existen_cambios_en_sheets(datos_sheets, tipo_meta):
+    """
+    Compara el hash de los datos actuales de Sheets con el guardado en sync_metas_log.txt
+    """
+    archivo_log = LOG_FILE
 
-def get_data_hash(df):
-    return hashlib.md5(df.to_csv(index=False).encode()).hexdigest()
+    # 1. Convertir los datos a un string y generar la huella digital (Hash)
+    datos_string = json.dumps(datos_sheets, sort_keys=True).encode("utf-8")
+    hash_actual = hashlib.md5(datos_string).hexdigest()
+
+    # 2. Leer el hash anterior guardado en el log
+    hash_guardado = ""
+    if os.path.exists(archivo_log):
+        with open(archivo_log, "r") as f:
+            lineas = f.readlines()
+            for linea in lineas:
+                if linea.startswith(tipo_meta):
+                    hash_guardado = linea.split(":")[1].strip()
+
+    # 3. Comparar huellas
+    if hash_actual == hash_guardado:
+        return False  # No hay cambios
+
+    # 4. Si hay cambios, actualizar el archivo log con el nuevo hash
+    lineas_nuevas = []
+    actualizado = False
+    if os.path.exists(archivo_log):
+        with open(archivo_log, "r") as f:
+            lineas_nuevas = f.readlines()
+
+    with open(archivo_log, "w") as f:
+        for i, linea in enumerate(lineas_nuevas):
+            if linea.startswith(tipo_meta):
+                lineas_nuevas[i] = f"{tipo_meta}:{hash_actual}\n"
+                actualizado = True
+        if not actualizado:
+            lineas_nuevas.append(f"{tipo_meta}:{hash_actual}\n")
+
+        f.writelines(lineas_nuevas)
+
+    return True
 
 
 def clean_number(val):
@@ -31,8 +70,6 @@ def clean_number(val):
 
 
 def run_sync_metas_mensual(db_config_dwh):
-    global ULTIMO_HASH_METAS
-
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
         client = gspread.authorize(creds)
@@ -40,6 +77,15 @@ def run_sync_metas_mensual(db_config_dwh):
 
         # Leemos el bloque exacto K2:U14
         data = sheet.get("K2:U14")
+
+        # === CONTROL DE CAMBIOS (HASH DELTA CHECK) ===
+        # Validamos usando la etiqueta "mensual"
+        if not existen_cambios_en_sheets(data, "mensual"):
+            return  # Saliendo silenciosamente, no hay cambios desde hace 3 días
+
+        print(
+            f"[{time.strftime('%H:%M:%S')}] ⚡ Cambio detectado en Google Sheets (Metas Mensuales). Sincronizando hacia SQL..."
+        )
 
         for row in data:
             while len(row) < 11:
@@ -60,24 +106,23 @@ def run_sync_metas_mensual(db_config_dwh):
         ]
 
         df_metas = pd.DataFrame(data, columns=columnas)
-        hash_actual = get_data_hash(df_metas)
 
-        if hash_actual == ULTIMO_HASH_METAS:
-            return
+        # === GUARDAR BACKUP HISTÓRICO EN TXT ===
+        fecha_legible = time.strftime("%d/%m/%Y %H:%M:%S")
+        nombre_archivo = "historial_metas_mensual.txt"
+
+        # Usamos "a" (append) para agregar el texto al final sin borrar lo anterior
+        with open(nombre_archivo, "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*80}\n")
+            f.write(f"CAMBIO DE METAS DETECTADO EL: {fecha_legible}\n")
+            f.write(f"{'='*80}\n")
+            # to_string(index=False) dibuja una tabla de texto alineada con espacios
+            f.write(df_metas.to_string(index=False))
+            f.write("\n\n")
 
         print(
-            f"[{time.strftime('%H:%M:%S')}] ⚡ Cambio detectado en Google Sheets (Metas Mensuales). Sincronizando hacia SQL..."
+            f"[{time.strftime('%H:%M:%S')}] 📁 Registro de cambio agregado en: {nombre_archivo}"
         )
-
-        if ULTIMO_HASH_METAS is not None:
-            fecha_log = time.strftime("%Y%m%d_%H%M%S")
-            nombre_archivo = f"historial_metas/cambio_metas_mensual_{fecha_log}.csv"
-            if not os.path.exists("historial_metas"):
-                os.makedirs("historial_metas")
-            df_metas.to_csv(nombre_archivo, index=False)
-            print(
-                f"[{time.strftime('%H:%M:%S')}] 📁 Registro de cambio guardado en: {nombre_archivo}"
-            )
 
         # === INSERCIÓN SEGURA EN SQL SERVER ===
         # Obtenemos el periodo de la hoja (K2) para acotar la consulta
@@ -120,7 +165,6 @@ def run_sync_metas_mensual(db_config_dwh):
         conn.commit()
         conn.close()
 
-        ULTIMO_HASH_METAS = hash_actual
         print(
             f"[{time.strftime('%H:%M:%S')}] ✅ Base de datos SQL actualizada con las nuevas metas del periodo {periodo_actual}."
         )

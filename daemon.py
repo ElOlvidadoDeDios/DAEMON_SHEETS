@@ -77,11 +77,11 @@ TransaccionesHoy AS (
         END AS IdSAgencia,
         T_PTM.PAGARE,
         T_PTM.MONTO_PRESTAMO
-    FROM dbo.PRESTAMO T_PTM
-    INNER JOIN dbo.PREEC T_PRE ON T_PRE.CUENTA = T_PTM.CUENTA AND T_PRE.OTORGA = T_PTM.OTORGA AND T_PRE.PAGARE = T_PTM.PAGARE AND T_PRE.PERIODO = CONVERT(VARCHAR(6), GETDATE(), 112)
-    INNER JOIN SEGURIDAD.DBO.ANAREC T_ANA ON T_ANA.ID_ANAREC = T_PRE.ID_ANA AND T_ANA.FLAG_ANAREC = 'A'
-    INNER JOIN SEGURIDAD.dbo.USUARIOS T_USU ON T_USU.ID_USER = T_ANA.ID_USER
-    INNER JOIN SEGURIDAD.dbo.GRUPOUSER T_GRU ON T_GRU.ID_GRUPO = T_USU.ID_GRUPO AND T_GRU.NOM_GRUPO = 'CREDITOS'
+    FROM dbo.PRESTAMO T_PTM WITH (NOLOCK)
+    INNER JOIN dbo.PREEC T_PRE WITH (NOLOCK) ON T_PRE.CUENTA = T_PTM.CUENTA AND T_PRE.OTORGA = T_PTM.OTORGA AND T_PRE.PAGARE = T_PTM.PAGARE AND T_PRE.PERIODO = CONVERT(VARCHAR(6), GETDATE(), 112)
+    INNER JOIN SEGURIDAD.DBO.ANAREC T_ANA WITH (NOLOCK) ON T_ANA.ID_ANAREC = T_PRE.ID_ANA AND T_ANA.FLAG_ANAREC = 'A'
+    INNER JOIN SEGURIDAD.dbo.USUARIOS T_USU WITH (NOLOCK) ON T_USU.ID_USER = T_ANA.ID_USER
+    INNER JOIN SEGURIDAD.dbo.GRUPOUSER T_GRU WITH (NOLOCK) ON T_GRU.ID_GRUPO = T_USU.ID_GRUPO AND T_GRU.NOM_GRUPO = 'CREDITOS'
     WHERE CAST(T_PTM.OTORGA AS DATE) = CAST(GETDATE() AS DATE)
       AND T_PTM.TIPO_PROD <> '52'
       AND T_USU.ID_USER NOT IN (
@@ -185,7 +185,34 @@ def push_to_google_sheets(df, df_anterior, df_inclusivos):
             {"range": "H1", "values": [[f"Última act:\n{hora_actual}"]]}
         )
 
-        # 5. Inclusivos en A20
+        # 5. Columna H (Deltas con el formato +Cantidad -> Monto)
+        datos_deltas = []
+        for i in range(filas_df):
+            if df_anterior is not None:
+                diff_num = (
+                    df.iloc[i]["ColocacionNumReal"]
+                    - df_anterior.iloc[i]["ColocacionNumReal"]
+                )
+                diff_monto = (
+                    df.iloc[i]["ColocacionMontoReal"]
+                    - df_anterior.iloc[i]["ColocacionMontoReal"]
+                )
+            else:
+                diff_num = 0
+                diff_monto = 0
+
+            # Solo se escribe si hubo un aumento (evita que marque ceros al inicio del día)
+            if diff_num > 0 or diff_monto > 0:
+                # Formato: +1 -> 2500,00
+                str_delta = f"+{int(diff_num)} -> {diff_monto:.2f}".replace(".", ",")
+            else:
+                str_delta = ""
+
+            datos_deltas.append([str_delta])
+
+        actualizaciones.append({"range": f"H2:H{filas_df + 1}", "values": datos_deltas})
+
+        # 6. Inclusivos en A20
         datos_inc = [
             df_inclusivos.columns.values.tolist()
         ] + df_inclusivos.values.tolist()
@@ -197,7 +224,7 @@ def push_to_google_sheets(df, df_anterior, df_inclusivos):
         sheet.batch_update(actualizaciones)
 
         print(
-            f"[{time.strftime('%H:%M:%S')}] ✅ GSheets sincronizado (E=NumReal, G=MontoReal, H=Hora)."
+            f"[{time.strftime('%H:%M:%S')}] ✅ GSheets sincronizado (E=NumReal, G=MontoReal, H=Deltas)."
         )
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] ❌ Error en API Google: {e}")
