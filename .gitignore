@@ -5,6 +5,8 @@ env/
 # Variables de entorno y credenciales (¡MUY IMPORTANTE!)
 .env
 credenciales.json
+credenciales_service_account.json
+*.json
 
 # Archivos temporales de Python
 __pycache__/
