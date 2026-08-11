@@ -11,3 +11,6 @@ credenciales_service_account.json
 # Archivos temporales de Python
 __pycache__/
 *.pyc
+
+# Carpeta de logs
+logs/

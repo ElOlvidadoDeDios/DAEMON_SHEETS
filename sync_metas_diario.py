@@ -6,43 +6,24 @@ from datetime import datetime
 import pyodbc
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-
-# --- CONFIGURACIÓN ---
-LOG_FILE = "sync_metas_log.txt"  # Aquí se guardan los Hashes
-DATE_LOG_FILE = "sync_diario_fecha.txt"  # Aquí se guarda la fecha de ejecución
-SCOPE = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive",
-]
-CREDS_FILE = "credenciales.json"
-SPREADSHEET_NAME = "Reporte_Productividad_En_Vivo"
-# ---------------------
+import config
 
 
 def existen_cambios_en_sheets(datos_sheets, tipo_meta):
-    """
-    Compara el hash de los datos actuales de Sheets con el guardado en sync_metas_log.txt
-    """
-    archivo_log = LOG_FILE
-
-    # 1. Convertir los datos a un string y generar la huella digital (Hash)
+    archivo_log = config.LOG_METAS
     datos_string = json.dumps(datos_sheets, sort_keys=True).encode("utf-8")
     hash_actual = hashlib.md5(datos_string).hexdigest()
 
-    # 2. Leer el hash anterior guardado en el log
     hash_guardado = ""
     if os.path.exists(archivo_log):
         with open(archivo_log, "r") as f:
-            lineas = f.readlines()
-            for linea in lineas:
+            for linea in f.readlines():
                 if linea.startswith(tipo_meta):
                     hash_guardado = linea.split(":")[1].strip()
 
-    # 3. Comparar huellas
     if hash_actual == hash_guardado:
-        return False  # No hay cambios
+        return False
 
-    # 4. Si hay cambios, actualizar el archivo log con el nuevo hash
     lineas_nuevas = []
     actualizado = False
     if os.path.exists(archivo_log):
@@ -56,35 +37,93 @@ def existen_cambios_en_sheets(datos_sheets, tipo_meta):
                 actualizado = True
         if not actualizado:
             lineas_nuevas.append(f"{tipo_meta}:{hash_actual}\n")
-
         f.writelines(lineas_nuevas)
 
-    return True  # Sí hay cambios, se debe hacer el INSERT/UPDATE en SQL
+    return True
 
 
-def run_sync_metas(db_config):
-    """
-    Sincroniza metas diarias.
-    Condiciones: A partir de las 10:00 AM, una vez al día, celdas 100% llenas.
-    """
+def run_sync_metas():
     now = datetime.now()
+    fecha_hoy = now.strftime("%Y-%m-%d")
 
-    # CANDADO 1: A partir de las 10 AM
+    # =========================================================
+    # 0. FILTRO DE DOMINGOS
+    # =========================================================
+    # Si es Domingo (weekday() == 6) el robot descansa...
+    if now.weekday() == 6:
+        return  # Se aborta toda la sincronización del día en silencio
+
+    # =========================================================
+    # 1. BLOQUE DE LAS 6 AM a 9:59 AM: LIMPIEZA AUTOMÁTICA
+    # =========================================================
+    # Solo se permite limpiar en la ventana de 6:00 AM a 9:59 AM
+    if 6 <= now.hour < 10:
+        # Verificamos si ya se hizo la limpieza de hoy (El estado de borrado)
+        ya_limpiado = False
+        if os.path.exists(config.LOG_LIMPIEZA):
+            with open(config.LOG_LIMPIEZA, "r") as f:
+                if f.read().strip() == fecha_hoy:
+                    ya_limpiado = True
+
+        if not ya_limpiado:
+            try:
+                creds = ServiceAccountCredentials.from_json_keyfile_name(
+                    config.CREDS_FILE, config.SCOPE
+                )
+                client = gspread.authorize(creds)
+                doc_proyeccion = client.open_by_key(config.SHEET_PROYECCION_ID)
+
+                hoja_proyeccion = doc_proyeccion.worksheet("Metas_Proyecciones")
+
+                # 1. Borramos el rango indicado
+                hoja_proyeccion.batch_clear(["D3:E15"])
+
+                # 2. Escribimos los mensajes de estado
+                actualizaciones_estado = [
+                    {
+                        "range": "A36",
+                        "values": [
+                            [
+                                f"🧹 Datos eliminados automáticamente a las: {now.strftime('%H:%M:%S')}"
+                            ]
+                        ],
+                    },
+                    {"range": "A37", "values": [["⏳ Esperando metas..."]]},
+                ]
+                hoja_proyeccion.batch_update(actualizaciones_estado)
+
+                # 3. Guardamos el sello de tiempo para no volver a borrar hoy
+                with open(config.LOG_LIMPIEZA, "w") as f:
+                    f.write(fecha_hoy)
+
+                print(
+                    f"[{now.strftime('%H:%M:%S')}] 🧹 Rango D3:E15 limpiado en Google Sheets. Modo 'Esperando metas' activado."
+                )
+            except Exception as e:
+                print(
+                    f"[{now.strftime('%H:%M:%S')}] ❌ Error en limpieza de la mañana: {e}"
+                )
+
+    # =========================================================
+    # 2. BLOQUE DE LAS 10 AM: INSERCIÓN A SQL SERVER
+    # =========================================================
+    # Si aún no son las 10 AM, el robot no hace nada más.
     if now.hour < 10:
         return
 
-    # CANDADO 2: ¿Ya se ejecutó exitosamente hoy?
-    fecha_hoy = now.strftime("%Y-%m-%d")
-    if os.path.exists(DATE_LOG_FILE):
-        with open(DATE_LOG_FILE, "r") as f:
+    # Si ya se subieron las metas hoy, no hacemos nada más.
+    if os.path.exists(config.LOG_FECHA_DIARIA):
+        with open(config.LOG_FECHA_DIARIA, "r") as f:
             if f.read().strip() == fecha_hoy:
-                return  # Ya se corrió hoy de forma exitosa
+                return
 
-    # 3. Autenticarse y Leer Hoja 2
+    # Intentamos leer la hoja (Si a las 6PM se borró, esto fallará los filtros de abajo y no hará nada)
     try:
-        creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+        creds = ServiceAccountCredentials.from_json_keyfile_name(
+            config.CREDS_FILE, config.SCOPE
+        )
         client = gspread.authorize(creds)
-        hoja_metas = client.open(SPREADSHEET_NAME).worksheet("Hoja 2")
+        hoja_metas = client.open(config.SPREADSHEET_NAME).worksheet("Hoja 2")
         data = hoja_metas.get("H3:M15")
     except Exception as e:
         print(
@@ -92,27 +131,22 @@ def run_sync_metas(db_config):
         )
         return
 
-    # CANDADO 3: Validar que no haya celdas vacías (Rango H3:M15)
+    # Validamos que no haya celdas vacías (si se borró a las 6PM, el script morirá aquí silenciosamente)
     for row in data:
         if len(row) < 6 or any(str(cell).strip() == "" for cell in row):
-            # No imprimimos error para no saturar la consola cada 2 minutos.
-            # Simplemente se aborta y espera al siguiente ciclo del daemon.
             return
 
-    # 4. CONTROL DE CAMBIOS (HASH)
+    # Control de cambios por hash
     if not existen_cambios_en_sheets(data, "diario"):
         return
 
-    # 5. Insertar en SQL Server
     try:
         print(
             f"[{now.strftime('%H:%M:%S')}] ⚡ Tabla llena detectada. Sincronizando metas diarias hacia SQL..."
         )
-
-        conn = pyodbc.connect(db_config)
+        conn = pyodbc.connect(config.DB_DWH)
         cursor = conn.cursor()
 
-        # Limpiar datos del día para evitar duplicados en caso de error
         cursor.execute(
             "DELETE FROM [dm_productividad].[dbo].[FctDiario_MetaProy] WHERE Fecha = ?",
             fecha_hoy,
@@ -123,20 +157,42 @@ def run_sync_metas(db_config):
         ([Fecha], [IdSAgencia], [ColocacionNumMeta], [ColocacionNumProy], [ColocacionMontoMeta], [ColocacionMontoProy])
         VALUES (?, ?, ?, ?, ?, ?)
         """
-
         for row in data:
             cursor.execute(insert_sql, row)
 
         conn.commit()
         conn.close()
 
-        # SELLADO DEL DÍA: Solo se marca la fecha SI la tabla estaba llena y se insertó
-        with open(DATE_LOG_FILE, "w") as f:
+        # Sello de inserción en SQL exitosa
+        with open(config.LOG_FECHA_DIARIA, "w") as f:
             f.write(fecha_hoy)
 
         print(
             f"[{now.strftime('%H:%M:%S')}] ✅ Metas diarias sincronizadas exitosamente en SQL Server."
         )
+
+        # =========================================================
+        # 3. CONFIRMACIÓN EN SHEETS (Y BORRADO DEL "ESPERANDO METAS")
+        # =========================================================
+        try:
+            doc_proyeccion = client.open_by_key(config.SHEET_PROYECCION_ID)
+
+            # ¡OJO AQUÍ! Cambia "Nombre De Tu Pestaña" por el real
+            hoja_proyeccion = doc_proyeccion.worksheet("Metas_Proyecciones")
+
+            mensaje_exito = f"✅ Metas diarias guardadas en SQL: {now.strftime('%d/%m/%Y %H:%M:%S')}"
+
+            # Escribimos el éxito en A1 y le mandamos un texto vacío ("") a A2 para borrar el "Esperando metas..."
+            actualizaciones = [
+                {"range": "A36", "values": [[mensaje_exito]]},
+                {"range": "A37", "values": [[""]]},
+            ]
+            hoja_proyeccion.batch_update(actualizaciones)
+
+        except Exception as error_sheet:
+            print(
+                f"[{now.strftime('%H:%M:%S')}] ⚠️ SQL actualizado, pero falló el mensaje en Sheets: {error_sheet}"
+            )
 
     except Exception as e:
         print(f"[{now.strftime('%H:%M:%S')}] ❌ Error en SQL (Metas Diarias): {e}")
