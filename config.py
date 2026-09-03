@@ -19,6 +19,7 @@ SHEET_PROYECCION_ID = "1i8uFkkRe9wjVF9LFmHTcPQ2xWBNwZWdMpe4df0gUIgQ"
 # ==========================================
 CELDA_AUTOELIMINAR_DIARIO = "Hoja 1!B2"
 CELDA_AUTOINSERTAR_DIARIO = "Hoja 1!B5"
+CELDA_MANUAL_DIARIO = "Hoja 1!B8"
 CELDA_MODO_AUTO = "Hoja 1!L3"
 CELDA_TEXTO_MANUAL = "Hoja 1!L4"
 CELDA_BOTON_MANUAL = "Hoja 1!L5"
@@ -48,7 +49,7 @@ PROD_COL_INC_INI = "C"
 PROD_COL_INC_FIN = "D"
 
 # Hoja 1: Metas Mensuales (Lectura infinita)
-RANGO_LEER_METAS_MENS = "Hoja 1!M2:U"
+RANGO_LEER_METAS_MENS = "Hoja 1!M2:W"
 
 # Hoja 2: Metas Diarias (Lectura infinita)
 RANGO_LEER_METAS_DIAR = "Hoja 2!H3:M"
@@ -58,7 +59,16 @@ PROY_PESTANA = "Metas_Proyecciones"
 PROY_FILA_INICIO = 3
 PROY_COL_LIMPIAR_INI = "D"
 PROY_COL_LIMPIAR_FIN = "E"
+PROY_MSJ_ESTADO_1 = "A36"
+PROY_MSJ_ESTADO_2 = "A37"
 
+# ==========================================
+# MANTENIMIENTO MENSUAL (DÍA 1)
+# ==========================================
+MENS_FILA_INICIO = 2
+MENS_COL_PERIODO = "M"
+MENS_COL_LIMPIAR_INI = "P"
+MENS_COL_LIMPIAR_FIN = "W"
 
 # ==========================================
 # CONFIGURACIÓN DE BASES DE DATOS (SQL SERVER)
@@ -87,3 +97,12 @@ LOG_METAS = os.path.join(CARPETA_LOGS, "sync_metas_log.txt")
 LOG_FECHA_DIARIA = os.path.join(CARPETA_LOGS, "sync_diario_fecha.txt")
 LOG_HISTORIAL_MENSUAL = os.path.join(CARPETA_LOGS, "historial_metas_mensual.txt")
 LOG_LIMPIEZA = os.path.join(CARPETA_LOGS, "sync_diario_limpieza.txt")
+LOG_LIMPIEZA_MENSUAL = os.path.join(CARPETA_LOGS, "sync_mensual_limpieza.txt")
+
+# ==========================================
+# MANTENIMIENTO MENSUAL (DÍA 1)
+# ==========================================
+MENS_FILA_INICIO = 2
+MENS_COL_PERIODO = "M"
+MENS_COL_LIMPIAR_INI = "P"
+MENS_COL_LIMPIAR_FIN = "W"

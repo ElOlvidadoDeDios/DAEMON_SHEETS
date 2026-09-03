@@ -8,7 +8,7 @@ import config
 from sql_queries import QUERY_MORA_POTENCIAL
 from oauth2client.service_account import ServiceAccountCredentials
 
-CELDA_GATILLO = "J1"  # Asegúrate de que esta sea la celda correcta de tu checkbox
+CELDA_GATILLO = "L1"  # Asegúrate de que esta sea la celda correcta de tu checkbox
 SHEET_TAB_NAME = "Hoja 5"
 
 
