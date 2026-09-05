@@ -1,3 +1,5 @@
+# sync_metas_diario.py
+
 import hashlib
 import json
 import time
@@ -107,23 +109,15 @@ def run_sync_metas(permitir_borrado, permitir_insercion, manual_forzado=False):
                 print(f"[{now.strftime('%H:%M:%S')}] ❌ Error en limpieza: {e}")
 
     # =========================================================
-    # 2. INSERCIÓN A SQL SERVER Y LOGS
+    # 2. INSERCIÓN A SQL SERVER Y LOGS (Evolutiva)
     # =========================================================
-    ejecutar_insercion = False
 
-    if manual_forzado:
-        ejecutar_insercion = True
-    else:
-        if now.hour >= 10 and permitir_insercion:
-            if (
-                not os.path.exists(config.LOG_FECHA_DIARIA)
-                or open(config.LOG_FECHA_DIARIA, "r").read().strip() != fecha_hoy
-            ):
-                ejecutar_insercion = True
+    # Si no es manual, y aún no son las 10 AM (o el botón general está apagado), abortamos.
+    if not manual_forzado:
+        if now.hour < 10 or not permitir_insercion:
+            return
 
-    if not ejecutar_insercion:
-        return
-
+    # 1. Leemos GSheets
     try:
         creds = ServiceAccountCredentials.from_json_keyfile_name(
             config.CREDS_FILE, config.SCOPE
@@ -140,6 +134,7 @@ def run_sync_metas(permitir_borrado, permitir_insercion, manual_forzado=False):
         )
         return
 
+    # 2. Validamos los datos leídos
     datos_validos = []
     for row in data:
         if not row or str(row[0]).strip() == "" or "TOTAL" in str(row[0]).upper():
@@ -150,19 +145,26 @@ def run_sync_metas(permitir_borrado, permitir_insercion, manual_forzado=False):
     if len(datos_validos) == 0:
         return
 
+    # 3. VERIFICACIÓN DE HASH: ¿Alguien añadió o cambió un dato desde la última vez?
     cambios_detectados = existen_cambios_en_sheets(datos_validos, "diario")
 
+    # Si es automático y no hay cambios nuevos, el robot se cruza de brazos y no gasta SQL
     if not manual_forzado and not cambios_detectados:
         return
 
+    # 4. INSERCIÓN: Si hay cambios (ej. una agencia rezagada llenó sus datos), actualizamos SQL
     try:
-        tipo_ejecucion = "FORZADA (Manual)" if manual_forzado else "Automática"
+        tipo_ejecucion = (
+            "FORZADA (Manual)" if manual_forzado else "Evolutiva (Cambio detectado)"
+        )
         print(
             f"[{now.strftime('%H:%M:%S')}] ⚡ {len(datos_validos)} Metas diarias. Ejecución {tipo_ejecucion}. Sincronizando..."
         )
 
         conn = pyodbc.connect(config.DB_DWH)
         cursor = conn.cursor()
+
+        # Borra lo que había hoy para no duplicar, y vuelve a insertar la lista actualizada
         cursor.execute(
             "DELETE FROM [dm_productividad].[dbo].[FctDiario_MetaProy] WHERE Fecha = ?",
             fecha_hoy,
@@ -175,9 +177,17 @@ def run_sync_metas(permitir_borrado, permitir_insercion, manual_forzado=False):
         conn.commit()
         conn.close()
 
-        with open(config.LOG_FECHA_DIARIA, "w") as f:
-            f.write(fecha_hoy)
-        print(f"[{now.strftime('%H:%M:%S')}] ✅ Metas diarias guardadas en SQL.")
+        # Opcional: Escribimos log visual en Google Sheets
+        try:
+            doc_proyeccion = client.open_by_key(config.SHEET_PROYECCION_ID)
+            hoja_proyeccion = doc_proyeccion.worksheet(config.PROY_PESTANA)
+            mensaje = f"✅ Metas guardadas ({len(datos_validos)} agencias): {now.strftime('%d/%m/%Y %H:%M:%S')}"
+            hoja_proyeccion.update_acell(config.PROY_MSJ_ESTADO_1, mensaje)
+        except Exception:
+            pass  # Si falla el log visual, no detenemos el proceso
+
+    except Exception as e:
+        print(f"[{now.strftime('%H:%M:%S')}] ❌ Error en SQL (Metas): {e}")
 
         # ==========================================
         # ESCRITURA DEL LOG VISUAL EN GOOGLE SHEETS

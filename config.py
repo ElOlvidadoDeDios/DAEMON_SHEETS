@@ -14,6 +14,8 @@ CREDS_FILE = "credenciales.json"
 SPREADSHEET_NAME = "Reporte_Productividad_En_Vivo"
 SHEET_PROYECCION_ID = "1i8uFkkRe9wjVF9LFmHTcPQ2xWBNwZWdMpe4df0gUIgQ"
 
+SHEET_MORA_ID = "12jP21cEqqPD9s3tjebS5tP-EoyKesrsY2W1JhDVR88E"
+
 # ==========================================
 # PANEL DE CONTROL (BOTONES Y SWITCHES)
 # ==========================================
@@ -98,6 +100,7 @@ LOG_FECHA_DIARIA = os.path.join(CARPETA_LOGS, "sync_diario_fecha.txt")
 LOG_HISTORIAL_MENSUAL = os.path.join(CARPETA_LOGS, "historial_metas_mensual.txt")
 LOG_LIMPIEZA = os.path.join(CARPETA_LOGS, "sync_diario_limpieza.txt")
 LOG_LIMPIEZA_MENSUAL = os.path.join(CARPETA_LOGS, "sync_mensual_limpieza.txt")
+LOG_MORA_SYNC = "log_mora_sync.txt"
 
 # ==========================================
 # MANTENIMIENTO MENSUAL (DÍA 1)

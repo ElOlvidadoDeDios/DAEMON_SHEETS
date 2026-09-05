@@ -1,3 +1,6 @@
+# daemon.py
+
+import os
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -12,7 +15,7 @@ import config
 from sql_queries import QUERY_PRODUCTIVIDAD, QUERY_INCLUSIVOS
 import sync_metas_diario
 import sync_metas_mensual
-import ejecutor_mora
+import sync_mora_gestion
 
 warnings.filterwarnings("ignore")
 
@@ -131,7 +134,6 @@ def run_daemon():
                 config.PROD_PESTANA
             )
 
-            # Botones Diarios
             btn_eliminar_diario = (
                 str(
                     hoja_principal.acell(
@@ -160,7 +162,6 @@ def run_daemon():
                     f"[{time.strftime('%H:%M:%S')}] 🎯 Botón MANUAL DIARIO presionado. Forzando ejecución..."
                 )
 
-            # Botones Mensuales
             celda_manual_mens = config.CELDA_BOTON_MANUAL.split("!")[1]
             modo_auto_mens = (
                 str(
@@ -192,7 +193,6 @@ def run_daemon():
         # =========================================================
         # ESTADO 1: SUEÑO PROFUNDO
         # =========================================================
-        # Si es de noche Y NO hay emergencias manuales, descansa 2 minutos
         if (
             (hora_actual >= 22 or hora_actual < 6)
             and not btn_manual_diario
@@ -215,16 +215,35 @@ def run_daemon():
                     f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Limpieza Matutina Diaria: {e}"
                 )
 
-            # Tarea 2: Limpieza mensual (Solo se activará si es el día 1 del mes)
-            try:
-                sync_metas_mensual.limpieza_primer_dia_mes()
-            except Exception as e:
-                print(
-                    f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Limpieza Matutina Mensual: {e}"
-                )
-
             time.sleep(120)
             continue
+
+        # =========================================================
+        # ESTADO 2.5: BLINDAJE DE SINCRONIZACIÓN DE MORA Y GESTIÓN
+        # =========================================================
+        # Esto asegura que se ejecute 1 vez al día, sin importar a qué hora se encienda la PC.
+        fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+        ya_sincronizo_mora = False
+
+        if os.path.exists(config.LOG_MORA_SYNC):
+            with open(config.LOG_MORA_SYNC, "r") as f:
+                if f.read().strip() == fecha_hoy:
+                    ya_sincronizo_mora = True
+
+        if not ya_sincronizo_mora:
+            print(
+                f"[{time.strftime('%H:%M:%S')}] 🔍 Detectada mora pendiente de sincronizar para el día de hoy. Iniciando..."
+            )
+            try:
+                sync_mora_gestion.ejecutar_sincronizacion_mora()
+
+                # Dejamos el sello para no volver a ejecutarlo hoy
+                with open(config.LOG_MORA_SYNC, "w") as f:
+                    f.write(fecha_hoy)
+            except Exception as e:
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Sincronización de Mora: {e}"
+                )
 
         # =========================================================
         # ESTADO 3: EXTRACCIÓN Y TAREAS DELEGADAS
@@ -266,7 +285,7 @@ def run_daemon():
             print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error general Productividad: {e}")
 
         # ==========================================
-        # VERIFICACIÓN DE CAMBIO DE MES
+        # VERIFICACIÓN INTELIGENTE DE CAMBIO DE MES
         # ==========================================
         try:
             sync_metas_mensual.verificar_y_limpiar_cambio_mes()
@@ -274,14 +293,6 @@ def run_daemon():
             print(
                 f"[{time.strftime('%H:%M:%S')}] ⚠️ Error verificando cambio de mes: {e}"
             )
-
-        # TAREAS DELEGADAS
-        try:
-            sync_metas_diario.run_sync_metas(
-                btn_eliminar_diario, btn_insertar_diario, btn_manual_diario
-            )
-        except Exception as e:
-            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Tarea Metas Diarias: {e}")
 
         # TAREAS DELEGADAS
         try:
@@ -304,8 +315,6 @@ def run_daemon():
 
 if __name__ == "__main__":
     try:
-        hilo_mora = threading.Thread(target=ejecutor_mora.escuchar_hoja, daemon=True)
-        hilo_mora.start()
         run_daemon()
     except KeyboardInterrupt:
         print("\nDaemon detenido manualmente.")
