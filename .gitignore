@@ -14,3 +14,10 @@ __pycache__/
 
 # Carpeta de logs
 logs/
+
+# Bases de datos locales
+*.db
+mora_gestion.db
+
+# Modelos y variables de Machine Learning
+*.pkl
