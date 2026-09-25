@@ -1,7 +1,5 @@
-# daemon.py
-
-import os
 import pandas as pd
+import schedule
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
@@ -10,12 +8,13 @@ import hashlib
 import sys
 import warnings
 import pyodbc
-import threading
 import config
 from sql_queries import QUERY_PRODUCTIVIDAD, QUERY_INCLUSIVOS
 import sync_metas_diario
 import sync_metas_mensual
 import sync_mora_gestion
+import sync_plazo_fijo
+import sync_preventivo_ia
 
 warnings.filterwarnings("ignore")
 
@@ -121,6 +120,16 @@ def run_daemon():
     ultimo_hash = None
     df_anterior = None
 
+    # ⏱️ Temporizador para la Mora
+    ultima_mora_sync = 0
+    # NUEVO TEMPORIZADOR PLAZO FIJO
+    ultima_plazo_fijo_sync = 0
+    # 🧠 TEMPORIZADOR PARA LA IA (Para que corra 1 sola vez al día)
+    fecha_ultima_ia = None
+
+    # 43200 segundos = 12 horas. Para correr cada 8 horas usa 28800.
+    FRECUENCIA_PLAZO_FIJO = 43200
+
     while True:
         hora_actual = datetime.now().hour
 
@@ -202,10 +211,23 @@ def run_daemon():
             continue
 
         # =========================================================
+        # ESTADO 1.5: CEREBRO IA PREVENTIVA (1 vez al día, al despertar)
+        # =========================================================
+        hoy_str_ia = datetime.now().strftime("%Y-%m-%d")
+        if hora_actual >= 6 and fecha_ultima_ia != hoy_str_ia:
+            print(
+                f"[{time.strftime('%H:%M:%S')}] 🤖 Despertando al Cerebro IA Preventiva..."
+            )
+            try:
+                sync_preventivo_ia.ejecutar_ia_preventiva()
+                fecha_ultima_ia = hoy_str_ia  # Marcamos que ya corrió hoy
+            except Exception as e:
+                print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Cerebro IA: {e}")
+
+        # =========================================================
         # ESTADO 2: MODO MANTENIMIENTO (6:00 AM a 7:59 AM)
         # =========================================================
         if 6 <= hora_actual < 8 and not btn_manual_diario and not modo_manual_mens:
-            # Tarea 1: Limpieza del tablero diario
             try:
                 sync_metas_diario.run_sync_metas(
                     btn_eliminar_diario, btn_insertar_diario, False
@@ -219,30 +241,36 @@ def run_daemon():
             continue
 
         # =========================================================
-        # ESTADO 2.5: BLINDAJE DE SINCRONIZACIÓN DE MORA Y GESTIÓN
+        # ESTADO 2.5: SINCRONIZACIÓN DE MORA (Frecuencia: Cada 2 horas)
         # =========================================================
-        # Esto asegura que se ejecute 1 vez al día, sin importar a qué hora se encienda la PC.
-        fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-        ya_sincronizo_mora = False
-
-        if os.path.exists(config.LOG_MORA_SYNC):
-            with open(config.LOG_MORA_SYNC, "r") as f:
-                if f.read().strip() == fecha_hoy:
-                    ya_sincronizo_mora = True
-
-        if not ya_sincronizo_mora:
+        tiempo_actual = time.time()
+        # 7200 segundos = 2 horas. Cambia este número si quieres más (ej: 10800 para 3 horas)
+        if tiempo_actual - ultima_mora_sync >= 7200:
             print(
-                f"[{time.strftime('%H:%M:%S')}] 🔍 Detectada mora pendiente de sincronizar para el día de hoy. Iniciando..."
+                f"[{time.strftime('%H:%M:%S')}] 🔍 Iniciando ciclo de Mora (Actualización periódica)..."
             )
             try:
                 sync_mora_gestion.ejecutar_sincronizacion_mora()
-
-                # Dejamos el sello para no volver a ejecutarlo hoy
-                with open(config.LOG_MORA_SYNC, "w") as f:
-                    f.write(fecha_hoy)
+                ultima_mora_sync = tiempo_actual  # Reiniciamos el cronómetro
             except Exception as e:
                 print(
                     f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Sincronización de Mora: {e}"
+                )
+
+        # =========================================================
+        # ESTADO 2.6: SINCRONIZACIÓN DE PLAZO FIJO (HACIA DWH)
+        # =========================================================
+        # Aprovechamos la variable tiempo_actual que ya declaraste arriba
+        if tiempo_actual - ultima_plazo_fijo_sync >= FRECUENCIA_PLAZO_FIJO:
+            print(
+                f"[{time.strftime('%H:%M:%S')}] 🔍 Iniciando ETL de Plazo Fijo (Frecuencia: Cada {FRECUENCIA_PLAZO_FIJO/3600}h)..."
+            )
+            try:
+                sync_plazo_fijo.ejecutar_sincronizacion_plazo_fijo()
+                ultima_plazo_fijo_sync = tiempo_actual  # Reiniciamos el cronómetro
+            except Exception as e:
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Sincronización de Plazo Fijo: {e}"
                 )
 
         # =========================================================
