@@ -1,4 +1,7 @@
 import pandas as pd
+import socket
+import requests
+from gspread.exceptions import APIError
 import schedule
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -23,13 +26,17 @@ def get_data_hash(df):
     return hashlib.md5(df.to_csv(index=False).encode()).hexdigest()
 
 
-def push_to_google_sheets(df, df_anterior, df_inclusivos):
+def push_to_google_sheets(df, df_anterior, df_inclusivos, sheet):
     try:
-        creds = ServiceAccountCredentials.from_json_keyfile_name(
-            config.CREDS_FILE, config.SCOPE
-        )
-        client = gspread.authorize(creds)
-        sheet = client.open(config.SPREADSHEET_NAME).worksheet(config.PROD_PESTANA)
+        # creds = ServiceAccountCredentials.from_json_keyfile_name(
+        #    config.CREDS_FILE, config.SCOPE
+        # )
+        # client = gspread.authorize(creds)
+        # sheet = client.open(config.SPREADSHEET_NAME).worksheet(config.PROD_PESTANA)
+
+        actualizaciones = []
+        filas_df = len(df)
+        fila_fin = config.PROD_FILA_INICIO + filas_df - 1
 
         actualizaciones = []
         filas_df = len(df)
@@ -130,75 +137,87 @@ def run_daemon():
     # 43200 segundos = 12 horas. Para correr cada 8 horas usa 28800.
     FRECUENCIA_PLAZO_FIJO = 43200
 
+    # 1. ✅ AUTENTICAR SOLO UNA VEZ FUERA DEL BUCLE
+    # gspread se encarga automáticamente de renovar el token cuando expire en segundo plano.
+    creds = ServiceAccountCredentials.from_json_keyfile_name(
+        config.CREDS_FILE, config.SCOPE
+    )
+    client = gspread.authorize(creds)
+    hoja_principal = client.open(config.SPREADSHEET_NAME).worksheet(config.PROD_PESTANA)
+
     while True:
         hora_actual = datetime.now().hour
 
-        # 1. EL DIRECTOR LEE TODOS LOS BOTONES PRIMERO
+        # 2. ✅ LECTURA OPTIMIZADA DEL PANEL DE CONTROL (1 sola petición en lugar de 5)
         try:
-            creds = ServiceAccountCredentials.from_json_keyfile_name(
-                config.CREDS_FILE, config.SCOPE
-            )
-            client = gspread.authorize(creds)
-            hoja_principal = client.open(config.SPREADSHEET_NAME).worksheet(
-                config.PROD_PESTANA
-            )
+            celdas_a_leer = [
+                config.CELDA_AUTOELIMINAR_DIARIO.split("!")[1],
+                config.CELDA_AUTOINSERTAR_DIARIO.split("!")[1],
+                config.CELDA_MANUAL_DIARIO.split("!")[1],
+                config.CELDA_MODO_AUTO.split("!")[1],
+                config.CELDA_BOTON_MANUAL.split("!")[1],
+            ]
 
-            btn_eliminar_diario = (
-                str(
-                    hoja_principal.acell(
-                        config.CELDA_AUTOELIMINAR_DIARIO.split("!")[1]
-                    ).value
-                ).upper()
-                == "TRUE"
-            )
-            btn_insertar_diario = (
-                str(
-                    hoja_principal.acell(
-                        config.CELDA_AUTOINSERTAR_DIARIO.split("!")[1]
-                    ).value
-                ).upper()
-                == "TRUE"
-            )
+            valores = hoja_principal.batch_get(celdas_a_leer)
 
-            celda_manual_diar = config.CELDA_MANUAL_DIARIO.split("!")[1]
-            btn_manual_diario = (
-                str(hoja_principal.acell(celda_manual_diar).value).upper() == "TRUE"
-            )
+            # Helper para parsear la respuesta de batch_get
+            def get_bool(val_list):
+                if val_list and len(val_list[0]) > 0:
+                    return str(val_list[0][0]).upper() == "TRUE"
+                return False
+
+            btn_eliminar_diario = get_bool(valores[0])
+            btn_insertar_diario = get_bool(valores[1])
+            btn_manual_diario = get_bool(valores[2])
+            modo_auto_mens = get_bool(valores[3])
+            modo_manual_mens = get_bool(valores[4])
+
+            # Apagar botones manuales en un solo batch si fueron activados (1 sola petición)
+            actualizaciones_botones = []
 
             if btn_manual_diario:
-                hoja_principal.update_acell(celda_manual_diar, False)
+                actualizaciones_botones.append(
+                    {"range": celdas_a_leer[2], "values": [[False]]}
+                )
                 print(
                     f"[{time.strftime('%H:%M:%S')}] 🎯 Botón MANUAL DIARIO presionado. Forzando ejecución..."
                 )
-
-            celda_manual_mens = config.CELDA_BOTON_MANUAL.split("!")[1]
-            modo_auto_mens = (
-                str(
-                    hoja_principal.acell(config.CELDA_MODO_AUTO.split("!")[1]).value
-                ).upper()
-                == "TRUE"
-            )
-            modo_manual_mens = (
-                str(hoja_principal.acell(celda_manual_mens).value).upper() == "TRUE"
-            )
 
             ejecutar_mensual = False
             if modo_auto_mens:
                 ejecutar_mensual = True
             elif modo_manual_mens:
                 ejecutar_mensual = True
-                hoja_principal.update_acell(celda_manual_mens, False)
+                actualizaciones_botones.append(
+                    {"range": celdas_a_leer[4], "values": [[False]]}
+                )
                 print(
                     f"[{time.strftime('%H:%M:%S')}] 🎯 Botón MANUAL MENSUAL presionado."
                 )
 
+            if actualizaciones_botones:
+                hoja_principal.batch_update(actualizaciones_botones)
+
+        # 3. ✅ MANEJO DE CAÍDAS DE RED Y LIMITES DE GOOGLE
+        except APIError as e:
+            if e.response.status_code in [403, 429]:
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] ⚠️ Límite de Google API excedido. Pausando Daemon por 5 minutos..."
+                )
+                time.sleep(300)  # Respiro largo para que Google libere el bloqueo
+            continue
+        except (requests.exceptions.ConnectionError, socket.gaierror) as e:
+            print(
+                f"[{time.strftime('%H:%M:%S')}] ⚠️ Microcorte de Internet/DNS. Ignorando panel este ciclo..."
+            )
+            time.sleep(60)
+            continue
         except Exception as e:
             print(
-                f"[{time.strftime('%H:%M:%S')}] ⚠️ Error leyendo Panel de Control: {e}"
+                f"[{time.strftime('%H:%M:%S')}] ⚠️ Error inesperado leyendo Panel de Control: {e}"
             )
             time.sleep(120)
             continue
-
         # =========================================================
         # ESTADO 1: SUEÑO PROFUNDO
         # =========================================================
@@ -306,7 +325,10 @@ def run_daemon():
                 print(
                     f"[{time.strftime('%H:%M:%S')}] ⚡ Nuevo crédito/cambio detectado en TRANSACMIF."
                 )
-                push_to_google_sheets(df_actual, df_anterior, df_inclusivos)
+                # 4. ✅ Pasamos la hoja ya autenticada como cuarto argumento
+                push_to_google_sheets(
+                    df_actual, df_anterior, df_inclusivos, hoja_principal
+                )
                 df_anterior = df_actual.copy()
                 ultimo_hash = hash_actual
         except Exception as e:

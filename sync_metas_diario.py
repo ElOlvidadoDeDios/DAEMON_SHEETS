@@ -11,6 +11,15 @@ from oauth2client.service_account import ServiceAccountCredentials
 import config
 
 
+def clean_number(val):
+    try:
+        if str(val).strip() == "":
+            return 0
+        return float(str(val).replace(",", "").replace(" ", "").replace("S/", ""))
+    except:
+        return 0
+
+
 def existen_cambios_en_sheets(datos_sheets, tipo_meta):
     archivo_log = config.LOG_METAS
     datos_string = json.dumps(datos_sheets, sort_keys=True).encode("utf-8")
@@ -171,8 +180,18 @@ def run_sync_metas(permitir_borrado, permitir_insercion, manual_forzado=False):
         )
 
         insert_sql = "INSERT INTO [dm_productividad].[dbo].[FctDiario_MetaProy] ([Fecha], [IdSAgencia], [ColocacionNumMeta], [ColocacionNumProy], [ColocacionMontoMeta], [ColocacionMontoProy]) VALUES (?, ?, ?, ?, ?, ?)"
+
         for row in datos_validos:
-            cursor.execute(insert_sql, row)
+            # Limpiamos los índices numéricos antes de inyectarlos a SQL
+            fila_limpia = (
+                str(row[0]).strip(),  # Fecha
+                str(row[1]).strip(),  # IdSAgencia
+                clean_number(row[2]),  # ColocacionNumMeta
+                clean_number(row[3]),  # ColocacionNumProy
+                clean_number(row[4]),  # ColocacionMontoMeta
+                clean_number(row[5]),  # ColocacionMontoProy
+            )
+            cursor.execute(insert_sql, fila_limpia)
 
         conn.commit()
         conn.close()

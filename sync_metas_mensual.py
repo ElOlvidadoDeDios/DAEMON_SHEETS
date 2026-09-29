@@ -22,16 +22,33 @@ def clean_number(val):
 
 def run_sync_metas_mensual():
     try:
-        creds = ServiceAccountCredentials.from_json_keyfile_name(
-            config.CREDS_FILE, config.SCOPE
-        )
-        client = gspread.authorize(creds)
+        # === NUEVO BLOQUE CON REINTENTOS PARA GOOGLE ===
+        data = None
+        for intento in range(3):
+            try:
+                creds = ServiceAccountCredentials.from_json_keyfile_name(
+                    config.CREDS_FILE, config.SCOPE
+                )
+                client = gspread.authorize(creds)
+                hoja_nombre = config.RANGO_LEER_METAS_MENS.split("!")[0]
+                rango_exacto = config.RANGO_LEER_METAS_MENS.split("!")[1]
 
-        hoja_nombre = config.RANGO_LEER_METAS_MENS.split("!")[0]
-        rango_exacto = config.RANGO_LEER_METAS_MENS.split("!")[1]
+                sheet = client.open(config.SPREADSHEET_NAME).worksheet(hoja_nombre)
+                data = sheet.get(rango_exacto)
+                break  # Si tiene éxito, rompe el bucle de reintentos
 
-        sheet = client.open(config.SPREADSHEET_NAME).worksheet(hoja_nombre)
-        data = sheet.get(rango_exacto)
+            except Exception as e:
+                if intento < 2:
+                    print(
+                        f"[{time.strftime('%H:%M:%S')}] ⚠️ Hipo de Google API detectado. Reintentando en 15s..."
+                    )
+                    time.sleep(15)
+                else:
+                    raise e  # Si falla 3 veces, lo manda al error crítico de abajo
+
+        if not data:
+            return
+        # ===============================================
 
         datos_validos = []
         for row in data:
