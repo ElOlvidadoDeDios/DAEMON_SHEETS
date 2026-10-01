@@ -25,6 +25,9 @@ CELDA_MANUAL_DIARIO = "Hoja 1!B8"
 CELDA_MODO_AUTO = "Hoja 1!L3"
 CELDA_TEXTO_MANUAL = "Hoja 1!L4"
 CELDA_BOTON_MANUAL = "Hoja 1!L5"
+# Módulo Administradores
+CELDA_AUTO_ADMIN = "Hoja 1!I24"  # Checkbox "Actualizar datos automáticamente"
+CELDA_MANUAL_ADMIN = "Hoja 1!I27"  # Checkbox "Actualizar datos"
 
 # ==========================================
 # RANGOS DINÁMICOS (SOPORTAN CRECIMIENTO)
@@ -52,6 +55,9 @@ PROD_COL_INC_FIN = "D"
 
 # Hoja 1: Metas Mensuales (Lectura infinita)
 RANGO_LEER_METAS_MENS = "Hoja 1!M2:W"
+
+# Hoja 1: Tabla de Administradores (Columnas N a T, asumiendo que "Correo Corporativo" será la columna T)
+RANGO_LEER_ADMIN = "Hoja 1!J23:U37"
 
 # Hoja 2: Metas Diarias (Lectura infinita)
 RANGO_LEER_METAS_DIAR = "Hoja 2!H3:M"

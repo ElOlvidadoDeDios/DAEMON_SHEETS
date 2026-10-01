@@ -18,6 +18,7 @@ import sync_metas_mensual
 import sync_mora_gestion
 import sync_plazo_fijo
 import sync_preventivo_ia
+import sync_administradores
 
 warnings.filterwarnings("ignore")
 
@@ -156,6 +157,8 @@ def run_daemon():
                 config.CELDA_MANUAL_DIARIO.split("!")[1],
                 config.CELDA_MODO_AUTO.split("!")[1],
                 config.CELDA_BOTON_MANUAL.split("!")[1],
+                config.CELDA_AUTO_ADMIN.split("!")[1],  # <-- NUEVO
+                config.CELDA_MANUAL_ADMIN.split("!")[1],
             ]
 
             valores = hoja_principal.batch_get(celdas_a_leer)
@@ -171,6 +174,8 @@ def run_daemon():
             btn_manual_diario = get_bool(valores[2])
             modo_auto_mens = get_bool(valores[3])
             modo_manual_mens = get_bool(valores[4])
+            modo_auto_admin = get_bool(valores[5])
+            btn_manual_admin = get_bool(valores[6])
 
             # Apagar botones manuales en un solo batch si fueron activados (1 sola petición)
             actualizaciones_botones = []
@@ -197,6 +202,14 @@ def run_daemon():
 
             if actualizaciones_botones:
                 hoja_principal.batch_update(actualizaciones_botones)
+
+            if btn_manual_admin:
+                actualizaciones_botones.append(
+                    {"range": celdas_a_leer[6], "values": [[False]]}
+                )
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] 🎯 Botón MANUAL ADMIN presionado."
+                )
 
         # 3. ✅ MANEJO DE CAÍDAS DE RED Y LIMITES DE GOOGLE
         except APIError as e:
@@ -358,6 +371,14 @@ def run_daemon():
             except Exception as e:
                 print(
                     f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Tarea Metas Mensuales: {e}"
+                )
+
+        if modo_auto_admin or btn_manual_admin:
+            try:
+                sync_administradores.run_sync_administradores()
+            except Exception as e:
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Tarea Administradores: {e}"
                 )
 
         time.sleep(120)
