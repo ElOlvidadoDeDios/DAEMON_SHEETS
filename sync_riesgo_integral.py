@@ -1,3 +1,5 @@
+# sync_riesgo_integral.py
+
 import pandas as pd
 import sqlite3
 import pyodbc
@@ -27,6 +29,30 @@ def clasificar_riesgo(prob):
         return "MEDIO"
     else:
         return "BAJO"
+
+
+def fusionar_telefonos(row):
+    # Recolectamos los 4 campos crudos
+    tels = [
+        str(row["Celular1"]),
+        str(row["Celular2"]),
+        str(row["Telefono1"]),
+        str(row["Telefono2"]),
+    ]
+    tels_limpios = []
+
+    for t in tels:
+        # Quitamos espacios en blanco y basurita de formato
+        t_clean = t.replace(" ", "").replace(".0", "").strip()
+
+        # Ignoramos si está vacío o si pandas le puso 'nan' o 'None'
+        if t_clean and t_clean.lower() not in ["nan", "none", "null"]:
+            # Evitamos duplicados (si el CEL1 es igual al CEL2, solo lo pone una vez)
+            if t_clean not in tels_limpios:
+                tels_limpios.append(t_clean)
+
+    # Unimos la lista final con un guion y espacios
+    return " - ".join(tels_limpios) if tels_limpios else None
 
 
 def ejecutar_etl_riesgo_integral():
@@ -84,6 +110,8 @@ def ejecutar_etl_riesgo_integral():
     )
     df_final["Nivel_Riesgo_IA"] = df_final["probabilidad"].apply(clasificar_riesgo)
 
+    df_final["Telefonos"] = df_final.apply(fusionar_telefonos, axis=1)
+
     # Lógica de Negocio: Los que están "Al Día" NO deben tener compromiso (se borra lo residual)
     df_final.loc[
         df_final["Estado_Mora"] == "1. Al Día", ["compromiso", "fecha_promesa"]
@@ -117,6 +145,7 @@ def ejecutar_etl_riesgo_integral():
         df_final["probabilidad"], errors="coerce"
     )
     df_insert["Compromiso"] = df_final["compromiso"]
+    df_insert["Telefonos"] = df_final["Telefonos"]
 
     # Limpieza estricta de la fecha promesa para que SQL Server no explote
     df_insert["Fecha_Promesa"] = df_final["fecha_promesa"].apply(
@@ -142,8 +171,8 @@ def ejecutar_etl_riesgo_integral():
             INSERT INTO [DWH_Gestion_Cartera].[dbo].[fct_riesgo_integral] (
                 [Fecha_Foto], [Periodo], [IdSAgencia], [IdSAsesor], [Pagare], [Socio], 
                 [Producto], [Monto_Desembolsado], [Saldo_Capital], [Tasa_TEA], [Cuota_Mensual], 
-                [Dias_Atraso], [Estado_Mora], [Nivel_Riesgo_IA], [Probabilidad_IA], [Compromiso], [Fecha_Promesa]
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                [Dias_Atraso], [Estado_Mora], [Nivel_Riesgo_IA], [Probabilidad_IA], [Compromiso], [Fecha_Promesa], [Telefonos]
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         cursor.executemany(sql_insert, df_insert.values.tolist())
         conn_dwh.commit()
