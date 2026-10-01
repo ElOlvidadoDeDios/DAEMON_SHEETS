@@ -57,7 +57,7 @@ PROD_COL_INC_FIN = "D"
 RANGO_LEER_METAS_MENS = "Hoja 1!M2:W"
 
 # Hoja 1: Tabla de Administradores (Columnas N a T, asumiendo que "Correo Corporativo" será la columna T)
-RANGO_LEER_ADMIN = "Hoja 1!J23:U37"
+RANGO_LEER_ADMIN = "Hoja 1!J25:X"
 
 # Hoja 2: Metas Diarias (Lectura infinita)
 RANGO_LEER_METAS_DIAR = "Hoja 2!H3:M"

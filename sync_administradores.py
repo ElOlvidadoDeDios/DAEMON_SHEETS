@@ -28,7 +28,6 @@ def existen_cambios_admin(datos):
 
 def run_sync_administradores():
     try:
-        # Usamos reintentos por si hay hipo en Google
         data = None
         for intento in range(3):
             try:
@@ -54,14 +53,16 @@ def run_sync_administradores():
 
         datos_validos = []
         for row in data:
-            # Ignorar filas vacías o el Jefe comercial de abajo
+            # Ignoramos si la fila está vacía o si en el periodo no hay nada (evita la fila del Jefe comercial)
             if not row or str(row[0]).strip() == "" or "JEFE" in str(row[0]).upper():
                 continue
 
-            # Aseguramos que la fila tenga 7 columnas (Periodo, Id, Agencia, Nombre, Celular, CorreoPers, CorreoCorp)
-            while len(row) < 7:
+            # De la J a la X hay 15 columnas. Rellenamos con vacíos si Google Sheets las corta.
+            while len(row) < 15:
                 row.append("")
-            datos_validos.append(row[:7])
+
+            # Guardamos la fila completa estandarizada a 15 espacios
+            datos_validos.append(row[:15])
 
         if len(datos_validos) == 0 or not existen_cambios_admin(datos_validos):
             return
@@ -73,7 +74,6 @@ def run_sync_administradores():
         conn = pyodbc.connect(config.DB_DWH)
         cursor = conn.cursor()
 
-        # Obtenemos el periodo actual de la primera fila para borrar solo ese mes
         periodo_actual = str(datos_validos[0][0]).strip()
         cursor.execute(
             "DELETE FROM [DWH_Gestion_Cartera].[dbo].[dim_administrador] WHERE [Periodo] = ?",
@@ -87,12 +87,14 @@ def run_sync_administradores():
         """
 
         for row in datos_validos:
-            periodo = str(row[0]).strip()
-            id_agencia = str(row[1]).strip()
-            nombre = str(row[3]).strip()
-            celular = str(row[4]).strip()
-            correo_pers = str(row[5]).strip()
-            correo_corp = str(row[6]).strip()
+            # MAPEO EXACTO DE COLUMNAS SEGÚN TUS COORDENADAS
+            periodo = str(row[0]).strip()  # Columna J (0)
+            id_agencia = str(row[1]).strip()  # Columna K (1)
+            # row[2] es Agencia (L), no lo insertamos
+            nombre = str(row[3]).strip()  # Columna M (3) - Inicio de combinada
+            celular = str(row[8]).strip()  # Columna R (8)
+            correo_pers = str(row[9]).strip()  # Columna S (9) - Inicio de combinada
+            correo_corp = str(row[12]).strip()  # Columna V (12) - Inicio de combinada
 
             cursor.execute(
                 insert_sql,
