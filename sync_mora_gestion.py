@@ -381,7 +381,11 @@ def ejecutar_sincronizacion_mora():
             # 4.1 ESCRIBIR LA MORA CLÁSICA (Arriba)
             filas_mora_clasica = 0
             if not df_agencia.empty:
-                valores_mora = df_agencia.values.tolist()
+                # 🚀 NUEVO: Hacemos una copia y eliminamos la columna 'AGENCIA' solo para la vista visual
+                df_visual_mora = df_agencia.drop(columns=["AGENCIA"])
+
+                valores_mora = df_visual_mora.values.tolist()
+                # Ahora los datos se pegarán desde la columna A, pero empezando por 'PAGARE'
                 ws.update("A2", valores_mora, value_input_option="USER_ENTERED")
                 filas_mora_clasica = len(df_agencia)
 

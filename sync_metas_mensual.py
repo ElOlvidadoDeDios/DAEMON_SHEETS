@@ -194,10 +194,21 @@ def verificar_y_limpiar_cambio_mes():
         rango_borrar = f"{config.MENS_COL_LIMPIAR_INI}{config.MENS_FILA_INICIO}:{config.MENS_COL_LIMPIAR_FIN}{fila_fin}"
         sheet.batch_clear([rango_borrar])
 
-        # ACTUALIZAR PERIODO (Columna M)
+        # ACTUALIZAR PERIODO METAS (Columna M)
         valores_periodo = [[mes_actual_real] for _ in range(num_agencias)]
         rango_periodo = f"{config.MENS_COL_PERIODO}{config.MENS_FILA_INICIO}:{config.MENS_COL_PERIODO}{fila_fin}"
-        sheet.batch_update([{"range": rango_periodo, "values": valores_periodo}])
+
+        # ACTUALIZAR PERIODO ADMINISTRADORES (Columna J, filas 25 a 37)
+        valores_periodo_admin = [[mes_actual_real] for _ in range(num_agencias)]
+        rango_periodo_admin = f"J25:J{24 + num_agencias}"
+
+        # Ejecutamos ambos cambios en Google Sheets al mismo tiempo
+        sheet.batch_update(
+            [
+                {"range": rango_periodo, "values": valores_periodo},
+                {"range": rango_periodo_admin, "values": valores_periodo_admin},
+            ]
+        )
 
         # GUARDAR EL SELLO
         with open(config.LOG_LIMPIEZA_MENSUAL, "w") as f:

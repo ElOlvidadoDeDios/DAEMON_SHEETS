@@ -283,10 +283,17 @@ def run_daemon():
             )
             try:
                 sync_mora_gestion.ejecutar_sincronizacion_mora()
+
+                # --- NUEVA LLAMADA AL PUENTE DWH ---
+                import sync_riesgo_integral
+
+                sync_riesgo_integral.ejecutar_etl_riesgo_integral()
+                # -----------------------------------
+
                 ultima_mora_sync = tiempo_actual  # Reiniciamos el cronómetro
             except Exception as e:
                 print(
-                    f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Sincronización de Mora: {e}"
+                    f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Sincronización de Mora / Riesgo: {e}"
                 )
 
         # =========================================================
