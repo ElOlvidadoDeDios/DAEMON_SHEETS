@@ -115,3 +115,9 @@ MENS_FILA_INICIO = 2
 MENS_COL_PERIODO = "M"
 MENS_COL_LIMPIAR_INI = "P"
 MENS_COL_LIMPIAR_FIN = "W"
+
+
+# ==========================================
+# MI CUMPA
+# ==========================================
+SHEET_SEGUROS = "VENTA DE SEGUROS AGOSTO"

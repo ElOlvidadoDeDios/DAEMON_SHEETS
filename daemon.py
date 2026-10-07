@@ -1,3 +1,5 @@
+# daemon.py
+
 import pandas as pd
 import socket
 import requests
@@ -19,6 +21,7 @@ import sync_mora_gestion
 import sync_plazo_fijo
 import sync_preventivo_ia
 import sync_administradores
+import sync_ranking
 
 warnings.filterwarnings("ignore")
 
@@ -29,16 +32,6 @@ def get_data_hash(df):
 
 def push_to_google_sheets(df, df_anterior, df_inclusivos, sheet):
     try:
-        # creds = ServiceAccountCredentials.from_json_keyfile_name(
-        #    config.CREDS_FILE, config.SCOPE
-        # )
-        # client = gspread.authorize(creds)
-        # sheet = client.open(config.SPREADSHEET_NAME).worksheet(config.PROD_PESTANA)
-
-        actualizaciones = []
-        filas_df = len(df)
-        fila_fin = config.PROD_FILA_INICIO + filas_df - 1
-
         actualizaciones = []
         filas_df = len(df)
         fila_fin = config.PROD_FILA_INICIO + filas_df - 1
@@ -125,21 +118,18 @@ def push_to_google_sheets(df, df_anterior, df_inclusivos, sheet):
 # ==========================================
 def run_daemon():
     print(f"Iniciando Daemon maestro para '{config.SPREADSHEET_NAME}'...")
+
+    # 🚀 INICIALIZACIÓN DE VARIABLES
     ultimo_hash = None
     df_anterior = None
-
-    # ⏱️ Temporizador para la Mora
+    ultima_mora_diaria = 0
     ultima_mora_sync = 0
-    # NUEVO TEMPORIZADOR PLAZO FIJO
     ultima_plazo_fijo_sync = 0
-    # 🧠 TEMPORIZADOR PARA LA IA (Para que corra 1 sola vez al día)
     fecha_ultima_ia = None
 
-    # 43200 segundos = 12 horas. Para correr cada 8 horas usa 28800.
     FRECUENCIA_PLAZO_FIJO = 43200
 
     # 1. ✅ AUTENTICAR SOLO UNA VEZ FUERA DEL BUCLE
-    # gspread se encarga automáticamente de renovar el token cuando expire en segundo plano.
     creds = ServiceAccountCredentials.from_json_keyfile_name(
         config.CREDS_FILE, config.SCOPE
     )
@@ -147,9 +137,10 @@ def run_daemon():
     hoja_principal = client.open(config.SPREADSHEET_NAME).worksheet(config.PROD_PESTANA)
 
     while True:
-        hora_actual = datetime.now().hour
+        hora_actual_hora = datetime.now().hour
+        tiempo_actual = time.time()
 
-        # 2. ✅ LECTURA OPTIMIZADA DEL PANEL DE CONTROL (1 sola petición en lugar de 5)
+        # 2. ✅ LECTURA OPTIMIZADA DEL PANEL DE CONTROL
         try:
             celdas_a_leer = [
                 config.CELDA_AUTOELIMINAR_DIARIO.split("!")[1],
@@ -157,13 +148,12 @@ def run_daemon():
                 config.CELDA_MANUAL_DIARIO.split("!")[1],
                 config.CELDA_MODO_AUTO.split("!")[1],
                 config.CELDA_BOTON_MANUAL.split("!")[1],
-                config.CELDA_AUTO_ADMIN.split("!")[1],  # <-- NUEVO
+                config.CELDA_AUTO_ADMIN.split("!")[1],
                 config.CELDA_MANUAL_ADMIN.split("!")[1],
             ]
 
             valores = hoja_principal.batch_get(celdas_a_leer)
 
-            # Helper para parsear la respuesta de batch_get
             def get_bool(val_list):
                 if val_list and len(val_list[0]) > 0:
                     return str(val_list[0][0]).upper() == "TRUE"
@@ -177,7 +167,6 @@ def run_daemon():
             modo_auto_admin = get_bool(valores[5])
             btn_manual_admin = get_bool(valores[6])
 
-            # Apagar botones manuales en un solo batch si fueron activados (1 sola petición)
             actualizaciones_botones = []
 
             if btn_manual_diario:
@@ -200,9 +189,6 @@ def run_daemon():
                     f"[{time.strftime('%H:%M:%S')}] 🎯 Botón MANUAL MENSUAL presionado."
                 )
 
-            if actualizaciones_botones:
-                hoja_principal.batch_update(actualizaciones_botones)
-
             if btn_manual_admin:
                 actualizaciones_botones.append(
                     {"range": celdas_a_leer[6], "values": [[False]]}
@@ -211,13 +197,15 @@ def run_daemon():
                     f"[{time.strftime('%H:%M:%S')}] 🎯 Botón MANUAL ADMIN presionado."
                 )
 
-        # 3. ✅ MANEJO DE CAÍDAS DE RED Y LIMITES DE GOOGLE
+            if actualizaciones_botones:
+                hoja_principal.batch_update(actualizaciones_botones)
+
         except APIError as e:
             if e.response.status_code in [403, 429]:
                 print(
                     f"[{time.strftime('%H:%M:%S')}] ⚠️ Límite de Google API excedido. Pausando Daemon por 5 minutos..."
                 )
-                time.sleep(300)  # Respiro largo para que Google libere el bloqueo
+                time.sleep(300)
             continue
         except (requests.exceptions.ConnectionError, socket.gaierror) as e:
             print(
@@ -231,11 +219,12 @@ def run_daemon():
             )
             time.sleep(120)
             continue
+
         # =========================================================
         # ESTADO 1: SUEÑO PROFUNDO
         # =========================================================
         if (
-            (hora_actual >= 22 or hora_actual < 6)
+            (hora_actual_hora >= 22 or hora_actual_hora < 6)
             and not btn_manual_diario
             and not modo_manual_mens
         ):
@@ -243,23 +232,9 @@ def run_daemon():
             continue
 
         # =========================================================
-        # ESTADO 1.5: CEREBRO IA PREVENTIVA (1 vez al día, al despertar)
-        # =========================================================
-        hoy_str_ia = datetime.now().strftime("%Y-%m-%d")
-        if hora_actual >= 6 and fecha_ultima_ia != hoy_str_ia:
-            print(
-                f"[{time.strftime('%H:%M:%S')}] 🤖 Despertando al Cerebro IA Preventiva..."
-            )
-            try:
-                sync_preventivo_ia.ejecutar_ia_preventiva()
-                fecha_ultima_ia = hoy_str_ia  # Marcamos que ya corrió hoy
-            except Exception as e:
-                print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Cerebro IA: {e}")
-
-        # =========================================================
         # ESTADO 2: MODO MANTENIMIENTO (6:00 AM a 7:59 AM)
         # =========================================================
-        if 6 <= hora_actual < 8 and not btn_manual_diario and not modo_manual_mens:
+        if 6 <= hora_actual_hora < 8 and not btn_manual_diario and not modo_manual_mens:
             try:
                 sync_metas_diario.run_sync_metas(
                     btn_eliminar_diario, btn_insertar_diario, False
@@ -268,52 +243,68 @@ def run_daemon():
                 print(
                     f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Limpieza Matutina Diaria: {e}"
                 )
-
             time.sleep(120)
             continue
 
         # =========================================================
-        # ESTADO 2.5: SINCRONIZACIÓN DE MORA (Frecuencia: Cada 2 horas)
+        # ESTADO 2.3: SINCRONIZACIÓN DIARIA (IA + RANKING) - CADA 24 HORAS
         # =========================================================
-        tiempo_actual = time.time()
-        # 7200 segundos = 2 horas. Cambia este número si quieres más (ej: 10800 para 3 horas)
+        if tiempo_actual - ultima_mora_diaria >= 86400:
+            print(
+                f"[{time.strftime('%H:%M:%S')}] 🤖 Despertando al Cerebro IA Preventiva..."
+            )
+            try:
+                sync_preventivo_ia.ejecutar_ia_preventiva()
+            except Exception as e:
+                print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en IA: {e}")
+
+            try:
+                sync_ranking.ejecutar_ranking()
+            except Exception as e:
+                print(f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Ranking: {e}")
+
+            ultima_mora_diaria = tiempo_actual
+
+        # =========================================================
+        # ESTADO 2.5: SINCRONIZACIÓN DE MORA Y RIESGO - CADA 2 HORAS
+        # =========================================================
         if tiempo_actual - ultima_mora_sync >= 7200:
             print(
                 f"[{time.strftime('%H:%M:%S')}] 🔍 Iniciando ciclo de Mora (Actualización periódica)..."
             )
             try:
                 sync_mora_gestion.ejecutar_sincronizacion_mora()
-
-                # --- NUEVA LLAMADA AL PUENTE DWH ---
                 import sync_riesgo_integral
 
                 sync_riesgo_integral.ejecutar_etl_riesgo_integral()
-                # -----------------------------------
-
-                ultima_mora_sync = tiempo_actual  # Reiniciamos el cronómetro
+                ultima_mora_sync = tiempo_actual
             except Exception as e:
                 print(
                     f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Sincronización de Mora / Riesgo: {e}"
                 )
 
         # =========================================================
-        # ESTADO 2.6: SINCRONIZACIÓN DE PLAZO FIJO (HACIA DWH)
+        # ESTADO 2.8: SINCRONIZACIÓN PLAZO FIJO - CADA 12 HORAS
         # =========================================================
-        # Aprovechamos la variable tiempo_actual que ya declaraste arriba
         if tiempo_actual - ultima_plazo_fijo_sync >= FRECUENCIA_PLAZO_FIJO:
             print(
                 f"[{time.strftime('%H:%M:%S')}] 🔍 Iniciando ETL de Plazo Fijo (Frecuencia: Cada {FRECUENCIA_PLAZO_FIJO/3600}h)..."
             )
+
+            # 🚀 CORRECCIÓN: Movemos el cronómetro afuera del "try" para que, si hay un error,
+            # no se quede atrapado en un bucle infinito intentando ejecutarlo.
+            ultima_plazo_fijo_sync = tiempo_actual
+
             try:
+                # 🚀 CORRECCIÓN: Coloca aquí el nombre exacto de tu función
                 sync_plazo_fijo.ejecutar_sincronizacion_plazo_fijo()
-                ultima_plazo_fijo_sync = tiempo_actual  # Reiniciamos el cronómetro
             except Exception as e:
                 print(
-                    f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Sincronización de Plazo Fijo: {e}"
+                    f"[{time.strftime('%H:%M:%S')}] ⚠️ Error en Sincronización Plazo Fijo: {e}"
                 )
 
         # =========================================================
-        # ESTADO 3: EXTRACCIÓN Y TAREAS DELEGADAS
+        # ESTADO 3: EXTRACCIÓN Y TAREAS DELEGADAS (PRODUCTIVIDAD EN VIVO)
         # =========================================================
         try:
             conn = pyodbc.connect(config.DB_TRANSACMIF)
@@ -345,7 +336,6 @@ def run_daemon():
                 print(
                     f"[{time.strftime('%H:%M:%S')}] ⚡ Nuevo crédito/cambio detectado en TRANSACMIF."
                 )
-                # 4. ✅ Pasamos la hoja ya autenticada como cuarto argumento
                 push_to_google_sheets(
                     df_actual, df_anterior, df_inclusivos, hoja_principal
                 )
@@ -364,7 +354,7 @@ def run_daemon():
                 f"[{time.strftime('%H:%M:%S')}] ⚠️ Error verificando cambio de mes: {e}"
             )
 
-        # TAREAS DELEGADAS
+        # TAREAS DELEGADAS MENORES
         try:
             sync_metas_diario.run_sync_metas(
                 btn_eliminar_diario, btn_insertar_diario, btn_manual_diario

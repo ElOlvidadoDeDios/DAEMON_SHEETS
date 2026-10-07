@@ -77,6 +77,8 @@ def ejecutar_etl_riesgo_integral():
         df_ia = pd.read_sql(
             "SELECT pagare, probabilidad FROM historial_ia", conn_sqlite
         )
+        # 🚀 CORRECCIÓN: Borrar predicciones antiguas del mismo pagaré, conservar la más reciente
+        df_ia = df_ia.drop_duplicates(subset=["pagare"], keep="last")
     except:
         df_ia = pd.DataFrame(columns=["pagare", "probabilidad"])
 
@@ -84,6 +86,8 @@ def ejecutar_etl_riesgo_integral():
         df_compromisos = pd.read_sql(
             "SELECT pagare, compromiso, fecha_promesa FROM compromisos", conn_sqlite
         )
+        # 🚀 CORRECCIÓN: Borrar compromisos antiguos, conservar solo la promesa más reciente
+        df_compromisos = df_compromisos.drop_duplicates(subset=["pagare"], keep="last")
     except:
         df_compromisos = pd.DataFrame(columns=["pagare", "compromiso", "fecha_promesa"])
     conn_sqlite.close()
@@ -148,12 +152,35 @@ def ejecutar_etl_riesgo_integral():
     df_insert["Telefonos"] = df_final["Telefonos"]
 
     # Limpieza estricta de la fecha promesa para que SQL Server no explote
-    df_insert["Fecha_Promesa"] = df_final["fecha_promesa"].apply(
-        lambda x: x if pd.notnull(x) and str(x).strip() != "" else None
-    )
+    df_insert["Fecha_Promesa"] = pd.to_datetime(
+        df_final["fecha_promesa"], errors="coerce", dayfirst=True
+    ).dt.strftime("%Y-%m-%d")
 
     # Convertir NaN de pandas a None de Python (para que inserte NULL en la base de datos)
-    df_insert = df_insert.where(pd.notnull(df_insert), None)
+    df_insert = df_insert.astype(object).where(pd.notnull(df_insert), None)
+
+    # 🚀 CORRECCIÓN 1: Forzar el orden exacto de las columnas para que cuadre con el INSERT
+    columnas_ordenadas = [
+        "Fecha_Foto",
+        "Periodo",
+        "IdSAgencia",
+        "IdSAsesor",
+        "Pagare",
+        "Socio",
+        "Producto",
+        "Monto_Desembolsado",
+        "Saldo_Capital",
+        "Tasa_TEA",
+        "Cuota_Mensual",
+        "Dias_Atraso",
+        "Estado_Mora",
+        "Nivel_Riesgo_IA",
+        "Probabilidad_IA",
+        "Compromiso",
+        "Fecha_Promesa",
+        "Telefonos",
+    ]
+    df_insert = df_insert[columnas_ordenadas]
 
     # 5. Carga a SQL Server (DWH)
     try:
@@ -166,7 +193,9 @@ def ejecutar_etl_riesgo_integral():
             fecha_foto,
         )
 
-        cursor.fast_executemany = True
+        # 🚀 CORRECCIÓN 2: Mantenemos apagado 'fast_executemany' para evitar el bug de tipos con nulos
+        # La inserción estándar tardará menos de 2 segundos de todos modos.
+
         sql_insert = """
             INSERT INTO [DWH_Gestion_Cartera].[dbo].[fct_riesgo_integral] (
                 [Fecha_Foto], [Periodo], [IdSAgencia], [IdSAsesor], [Pagare], [Socio], 

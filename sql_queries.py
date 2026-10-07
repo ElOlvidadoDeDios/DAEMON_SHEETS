@@ -368,3 +368,44 @@ WHERE
     AND T_CAR.DESCRIP LIKE '%ANALISTA DE CREDITOS%'
     AND T_USU.ID_USER NOT IN ('PRECASTIGO', 'RJULI6', 'RJULIACA', 'RLIMA7', 'RQUILLA3', 'RSICUA4', 'LHR5', 'HTEJ5', 'TKPN5', 'GHVJ5', 'OTA5', 'SDHF5', 'CMN5', 'HQND5', 'RTRES')
 """
+
+QUERY_BASE_RANKING = """
+WITH Flujo AS (
+    SELECT IdSAsesor, SUM(ColocacionNumReal) AS Operaciones,
+           SUM(ColocacionMontoReal) AS Desembolsos, SUM(RepagoReal) AS Repagos
+    FROM [DWH_Gestion_Cartera].[dbo].[fct_flow]
+    WHERE Periodo IN ('202609', '202610', '202611')
+    GROUP BY IdSAsesor
+),
+Stock AS (
+    SELECT IdSAsesor, SUM(Mora150) AS Mora_150
+    FROM [DWH_Gestion_Cartera].[dbo].[fct_stock]
+    WHERE Periodo IN ('202609', '202610', '202611')
+    GROUP BY IdSAsesor
+),
+Asesores_Comerciales AS (
+    SELECT 
+        IdSAsesor, 
+        MAX(AsesorNombresApellidos) AS AsesorNombresApellidos, 
+        MAX(IdSAgencia) AS IdSAgencia
+    FROM [DWH_Gestion_Cartera].[dbo].[dim_asesor]
+    WHERE Periodo IN ('202609', '202610', '202611') AND Cargo NOT LIKE '%RECUPERADOR%'
+    GROUP BY IdSAsesor
+)
+SELECT 
+    A.IdSAsesor,
+    A.AsesorNombresApellidos AS Asesor,
+    CASE A.IdSAgencia
+        WHEN '01' THEN 'Wanchaq' WHEN '02' THEN 'San Jerónimo' WHEN '03' THEN 'Quillabamba'
+        WHEN '04' THEN 'Sicuani' WHEN '05' THEN 'Molino' WHEN '06' THEN 'Juliaca'
+        WHEN '07' THEN 'Lima Los Olivos' WHEN '08' THEN 'Tica Tica' WHEN '09' THEN 'Magisterio'
+        WHEN '10' THEN 'Lima SJL' WHEN '11' THEN 'Chiclayo' WHEN '12' THEN 'Arequipa'
+        WHEN '13' THEN 'Pucallpa' ELSE 'Otra Agencia (' + A.IdSAgencia + ')'
+    END AS Agencia,
+    ISNULL(F.Operaciones, 0) AS Operaciones,
+    (ISNULL(F.Desembolsos, 0) - ISNULL(F.Repagos, 0) - ISNULL(S.Mora_150, 0)) AS Crecimiento_Neto_150
+FROM Asesores_Comerciales A
+LEFT JOIN Flujo F ON A.IdSAsesor = F.IdSAsesor
+LEFT JOIN Stock S ON A.IdSAsesor = S.IdSAsesor
+WHERE ISNULL(F.Operaciones, 0) > 0 OR (ISNULL(F.Desembolsos, 0) - ISNULL(F.Repagos, 0) - ISNULL(S.Mora_150, 0)) <> 0
+"""

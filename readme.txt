@@ -1,0 +1,1 @@
+ejecutar: python daemon.py
